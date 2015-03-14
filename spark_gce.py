@@ -74,7 +74,7 @@ def run(cmds, parallelize = False, stop_on_error = True):
 		return_vals.append(result_queue.get())
 			
 	if sum(return_vals) > 0 and stop_on_error:
-		print "\nSubprocess execution failed.  %d out of %d commands returned a non-zero exit status." % (len(return_vals), sum(return_vals))
+		print "\nSubprocess execution failed.  %d out of %d commands returned a non-zero exit status." % (sum(return_vals), len(return_vals))
 		sys.exit(1)
 
 # -------------------------------------------------------------------------------------
@@ -142,8 +142,8 @@ def launch_cluster(cluster_name, opts):
 
 	# Start slave nodes
 	for i in xrange(opts.slaves):
-		cmds.append( command_prefix + '" instances create "' + cluster_name + '-slave' + str(i) + ' --machine-type "' + opts.instance_type + '" --network "' + cluster_name + '-network" --no-address --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.read_only" --image "https://www.googleapis.com/compute/v1/projects/centos-cloud/global/images/nvme-backports-debian-7-wheezy-v20141108" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd" --local-ssd interface=nvme' + zone_str )
-		
+		cmds.append( command_prefix + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.instance_type + '" --network "' + cluster_name + '-network" --no-address --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.read_only" --image "https://www.googleapis.com/compute/v1/projects/gce-nvme/global/images/nvme-backports-debian-7-wheezy-v20141108" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd" --local-ssd interface=nvme' + zone_str )
+
 	for cmd in cmds:
 		print cmd
 	#run(cmds, parallelize = True)
@@ -151,7 +151,7 @@ def launch_cluster(cluster_name, opts):
 
 def destroy_cluster(cluster_name, opts):
 	"""
-	Delete a cluster permenantly.  All state will be lost.
+	Delete a cluster permanently.  All state will be lost.
 	"""
 	print '[ Destroying cluster: %s ]'  % (cluster_name)
 	command_prefix = get_command_prefix(cluster_name, opts)
@@ -161,11 +161,11 @@ def destroy_cluster(cluster_name, opts):
 		host_name = instance['name']
 		zone = instance['zone']
 		if host_name == cluster_name + '-master':
-			cmds.append( command_prefix + ' instances delete ' + host_name + ' --zone ' + zone )
+			cmds.append( command_prefix + ' instances delete ' + host_name + ' --zone ' + zone + ' --quiet' )
 		elif cluster_name + '-slave' in host_name:
-			cmds.append( command_prefix + ' instances delete ' + host_name + ' --zone ' + zone )
+			cmds.append( command_prefix + ' instances delete ' + host_name + ' --zone ' + zone + ' --quiet' )
 
-	proceed = raw_input('Cluster %s with %d nodes will be deleted permenantly.  Proceed? (y/N) : ' % (cluster_name, len(cmds)))
+	proceed = raw_input('Cluster %s with %d nodes will be deleted permanently.  Proceed? (y/N) : ' % (cluster_name, len(cmds)))
 	if proceed == 'y' or proceed == 'Y':
 		run(cmds, parallelize = True)
 
