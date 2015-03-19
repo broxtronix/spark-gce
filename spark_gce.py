@@ -2,26 +2,18 @@
 
 ###
 # This script sets up a Spark cluster on Google Compute Engine
-# Sigmoidanalytics.com
+#
+# This script originally was written by @SigmoidAnalytics, and then later
+# modified by @broxtronix.
 ###
 
-from __future__ import with_statement
-
-import logging
 import os
-import pipes
-import random
-import shutil
-import subprocess
 import sys
-import tempfile
+import subprocess
 import time
 import commands
-import urllib2
-from optparse import OptionParser
 from sys import stderr
 import shlex
-import getpass
 import threading
 import json
 
@@ -30,37 +22,86 @@ import json
 # This is particularly useful for long-running, network-bound processes like
 # starting and stopping nodes with the 'gcloud' command.
 #
-def subprocess_cmd(cmd, result_queue):
-	import subprocess
-	try:
-		print "  [ CMD ] ", cmd
-		subprocess.check_output(cmd, shell=True)
-		result_queue.put(0)
-	except subprocess.CalledProcessError:
-		return result_queue.put(1)
 
-def run(cmds, parallelize = False, stop_on_error = True):
+def run_subprocess(cmds, result_queue):
+	"""
+	Call a sub-process, returning a tuple: (return code, merged_stdout_stderr).  
+
+	If cmds is a list of commands, each command is run serially.   
+	"""
+	import subprocess
+
+	# Convert non-list commands to a list with just one element so that the code
+	# below can be simpler, handling only this one case.
+	if not isinstance(cmds, list):
+		cmds = [ cmds ]
+
+	# Execute commands in serial
+	for cmd in cmds:
+		child = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+		stdout = child.communicate()[0]
+		return_code = child.returncode
+
+		# Check for errors. Only store the output for failed commands
+		if return_code != 0:
+			result_queue.put( (return_code, cmd, stdout) )
+		else:
+			result_queue.put( (return_code, cmd, None) )
+
+			
+def run(cmds, parallelize = False, verbose = False):
+	"""Run commands in serial or in parallel.
+
+	If cmds is a single command, it will run the command.
+	
+	If cmds is a list of commands, the commands will be run in serial or
+	parallel depending on the 'parallelize' flag.
+
+	If cmds is a list of lists of commands, the inner lists of commands will be executed in
+	serial within parallel threads.  (i.e. parallelism on the outer list)
+
+	"""
+
 	import multiprocessing
 	manager = multiprocessing.Manager()
 	result_queue = manager.Queue()
 
-	# Convert non-list commands to a list with just one element
+	# Convert non-list commands to a list with just one element so that the code
+	# below can be simpler, handling only this one case.
 	if not isinstance(cmds, list):
+		parallelize = False
 		cmds = [ cmds ]
-
 	
+	# List of lists forces parallelism to occur on the level of the outermost list.
+	if isinstance(cmds[0], list):
+		parallelize = True
+		
+	# For debugging purposes (if verbose is True), print the commands we are
+	# about to execute.
+	if verbose:
+		if isinstance(cmds[0], list):
+			for cmd_group in cmds:
+				print "  [ Command Group ]"
+				for cmd in cmd_group:
+					print "       CMD\t", cmd
+		else:
+			for cmd in cmds:
+				print "      CMD\t", cmd
+
+		
 	if not parallelize:
 
 		# Run commands serially
-		for cmd in cmds:
-			subprocess_cmd(cmd, result_queue)
-
+		run_subprocess(cmds, result_queue)
+				
 	else: 
 
-		# Start alignment compute processes.
+		# Start worker threads.
 		jobs = []
 		for cmd in cmds:
-			p = multiprocessing.Process(target=subprocess_cmd, args=(cmd, result_queue))
+			if verbose: print "  [ CMD ] ", cmd
+				
+			p = multiprocessing.Process(target=run_subprocess, args=(cmd, result_queue))
 			jobs.append(p)
 			p.start()
 
@@ -68,13 +109,28 @@ def run(cmds, parallelize = False, stop_on_error = True):
 		for p in jobs:
 			p.join()
 
-	# Parse the results.
+	# Check the results. Any failed commands are noted here, and their output is
+	# printed to stdout.
 	return_vals = []
+	num_failed = 0
+	failed_stdout = []
+	failed_cmds = []
 	while not result_queue.empty():
-		return_vals.append(result_queue.get())
-			
-	if sum(return_vals) > 0 and stop_on_error:
-		print "\nSubprocess execution failed.  %d out of %d commands returned a non-zero exit status." % (sum(return_vals), len(return_vals))
+		return_val, cmd, stdout = result_queue.get()
+
+		if return_val != 0:
+			num_failed += 1
+			failed_stdout.append(stdout)
+			failed_cmds.append(cmd)
+	
+	if num_failed > 0:
+		print "\n******************************************************************************************"
+		print "\nCall to subprocess failed.  %d commands in this set returned a non-zero exit status." % (num_failed)
+		print "\nFirst failed command:\n"
+		print failed_cmds[0]
+		print "\nCommand output:\n"
+		print failed_stdout[0]
+		print "******************************************************************************************"
 		sys.exit(1)
 
 # -------------------------------------------------------------------------------------
@@ -96,18 +152,6 @@ def fetch_instance_data(cluster_name, opts):
 		
 	return json.loads(output)
 
-
-def delete_network(cluster_name, opts):
-	print '[ Deleting Network & Firewall Entries ]'
-	command_prefix = get_command_prefix(cluster_name, opts)
-	cmds = []
-
-	# Uncomment the above and comment the below section if you don't want to open all ports for public.
-	# cmds.append( command_prefix + ' compute firewall-rules delete ' + cluster_name + '-internal --quiet' )
-	cmds.append(  command_prefix + ' firewall-rules delete ' + cluster_name + '-internal --quiet' )
-	cmds.append( command_prefix + ' networks delete "' + cluster_name + '-network" --quiet' )
-	run(cmds, stop_on_error = False)
-
 def setup_network(cluster_name, opts):
 
 	print '[ Setting up Network & Firewall Entries ]'
@@ -119,8 +163,20 @@ def setup_network(cluster_name, opts):
 	# Uncomment the above and comment the below section if you don't want to open all ports for public.
 	# cmds.append( command_prefix + ' compute firewall-rules delete ' + cluster_name + '-internal' )
 	cmds.append( command_prefix + ' firewall-rules create ' + cluster_name + '-internal --network ' + cluster_name + '-network --allow tcp udp icmp' )
-	run(cmds, stop_on_error = False)
-		
+	run(cmds)
+
+def delete_network(cluster_name, opts):
+	print '[ Deleting Network & Firewall Entries ]'
+	command_prefix = get_command_prefix(cluster_name, opts)
+	cmds = []
+
+	# Uncomment the above and comment the below section if you don't want to open all ports for public.
+	# cmds.append( command_prefix + ' compute firewall-rules delete ' + cluster_name + '-internal --quiet' )
+	cmds.append(  command_prefix + ' firewall-rules delete ' + cluster_name + '-internal --quiet' )
+	cmds.append( command_prefix + ' networks delete "' + cluster_name + '-network" --quiet' )
+	run(cmds)
+
+
 def launch_cluster(cluster_name, opts):
 	"""
 	Create a new cluster. 
@@ -134,20 +190,18 @@ def launch_cluster(cluster_name, opts):
 		zone_str = ''
 
 	# Set up the network
-	setup_network(cluster_name, opts)
-
-	# Start master node
+	# setup_network(cluster_name, opts)
+ 
+	# Start master nodes & slave nodes
 	cmds = []
 	cmds.append( command_prefix + ' instances create "' + cluster_name + '-master" --machine-type "' + opts.master_instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.read_only" --image "https://www.googleapis.com/compute/v1/projects/gce-nvme/global/images/nvme-backports-debian-7-wheezy-v20141108" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-md" --local-ssd interface=nvme' + zone_str )
-
-	# Start slave nodes
 	for i in xrange(opts.slaves):
-		cmds.append( command_prefix + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.instance_type + '" --network "' + cluster_name + '-network" --no-address --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.read_only" --image "https://www.googleapis.com/compute/v1/projects/gce-nvme/global/images/nvme-backports-debian-7-wheezy-v20141108" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd" --local-ssd interface=nvme' + zone_str )
+		cmds.append( command_prefix + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.read_only" --image "https://www.googleapis.com/compute/v1/projects/gce-nvme/global/images/nvme-backports-debian-7-wheezy-v20141108" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd" --local-ssd interface=nvme' + zone_str )
+	# run(cmds, parallelize = True)
 
-	for cmd in cmds:
-		print cmd
-	#run(cmds, parallelize = True)
-
+	# Set up the cluster by installing all the necessary software!
+	setup_new_cluster(cluster_name, opts)
+	
 
 def destroy_cluster(cluster_name, opts):
 	"""
@@ -165,7 +219,7 @@ def destroy_cluster(cluster_name, opts):
 		elif cluster_name + '-slave' in host_name:
 			cmds.append( command_prefix + ' instances delete ' + host_name + ' --zone ' + zone + ' --quiet' )
 
-	proceed = raw_input('Cluster %s with %d nodes will be deleted permanently.  Proceed? (y/N) : ' % (cluster_name, len(cmds)))
+	proceed = raw_input('Cluster %s with %d nodes will be deleted PERMANENTLY.  Proceed? (y/N) : ' % (cluster_name, len(cmds)))
 	if proceed == 'y' or proceed == 'Y':
 		run(cmds, parallelize = True)
 
@@ -203,7 +257,6 @@ def start_cluster(cluster_name, opts):
 	"""
 	print '[ Starting cluster: %s ]' % (cluster_name)
 
-
 	cmds = []
 	for instance in fetch_instance_data(cluster_name, opts):
 		host_name = instance['name']
@@ -226,146 +279,106 @@ def check_gcloud():
 		print "%s executable not found. \n# Make sure gcloud is installed and authenticated\nPlease follow https://cloud.google.com/compute/docs/gcloud-compute/" % myexec
 		sys.exit(1)
 
-def get_cluster_ips():
+def get_cluster_ips(cluster_name, opts):
+	command_prefix = get_command_prefix(cluster_name, opts)
 		
-	command = 'gcloud compute --project ' + project + ' instances list --format json'
+	command = command_prefix + ' instances list --format json'
 	output = subprocess.check_output(command, shell=True)
 	data = json.loads(output)
 	master_nodes=[]
 	slave_nodes=[]
 
 	for instance in data:
-
-		try:
-			host_name = instance['name']		
-			host_ip = instance['networkInterfaces'][0]['accessConfigs'][0]['natIP']
-			if host_name == cluster_name + '-master':
-				master_nodes.append(host_ip)
-			elif cluster_name + '-slave' in host_name:
-				slave_nodes.append(host_ip)
-
-		except:
-			pass
+		host_name = instance['name']
+		host_ip = instance['networkInterfaces'][0]['accessConfigs'][0]['natIP']
+		if host_name == cluster_name + '-master':
+			master_nodes.append( (host_name, host_ip) )
+		elif cluster_name + '-slave' in host_name:
+			slave_nodes.append( (host_name, host_ip) )
 	
 	# Return all the instances
 	return (master_nodes, slave_nodes)
 
-def enable_sudo(master,command):
+def ssh_wrap(host, identity_file, cmds, verbose = False):
+	''' 
+	Given a command to run on a remote host, this function wraps the command in
+	the appropriate ssh invocation that can be run on the local host to achieve
+	the desired action on the remote host. This can then be passed to the run()
+	function to execute the command on the remote host.
+
+	This function can take a single command or a list of commands, and will
+	return a list of ssh-wrapped commands.
 	'''
-	ssh_command(master,"echo \"import os\" > setuid.py ")
-	ssh_command(master,"echo \"import sys\" >> setuid.py")
-	ssh_command(master,"echo \"import commands\" >> setuid.py")
-	ssh_command(master,"echo \"command=sys.argv[1]\" >> setuid.py")
-	ssh_command(master,"echo \"os.setuid(os.geteuid())\" >> setuid.py")
-	ssh_command(master,"echo \"print commands.getstatusoutput(\"command\")\" >> setuid.py")
-	'''
-	os.system("ssh -i " + identity_file + " -t -o 'UserKnownHostsFile=/dev/null' -o 'CheckHostIP=no' -o 'StrictHostKeyChecking no' "+ username + "@" + master + " '" + command + "'")
+	if not isinstance(cmds, list):
+		cmds = [ cmds ]
 
-def ssh_thread(host,command):
+	username = os.environ["USER"]
+	result = []
+	for cmd in cmds:
+		if verbose: print '  SSH: ' + host[0] + '\t', cmd
+		result.append( "ssh -i " + identity_file + " -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no " + username + "@" + host[1] + " '" + cmd + "'" )
+	return result
 
-	enable_sudo(host,command)
-	
-def install_java(master_nodes,slave_nodes):
 
-	print '[ Installing Java and Development Tools ]'
+def deploy_keys(cluster_name, opts, master_nodes, slave_nodes):
+
+	print '[ Generating SSH keys on master and deploying to slave nodes ]'
 	master = master_nodes[0]
-	
-	master_thread = threading.Thread(target=ssh_thread, args=(master,"sudo yum install -y java-1.7.0-openjdk;sudo yum install -y java-1.7.0-openjdk-devel;sudo yum groupinstall \'Development Tools\' -y"))
-	master_thread.start()
-	
-	#ssh_thread(master,"sudo yum install -y java-1.7.0-openjdk")
+
+	cmds = [ "rm -f ~/.ssh/id_rsa && ssh-keygen -q -t rsa -N \"\" -f ~/.ssh/id_rsa",
+			 "cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys",
+			 "tar czf .ssh.tgz .ssh"]
+
 	for slave in slave_nodes:
-		
-		slave_thread = threading.Thread(target=ssh_thread, args=(slave,"sudo yum install -y java-1.7.0-openjdk;sudo yum install -y java-1.7.0-openjdk-devel;sudo yum groupinstall \'Development Tools\' -y"))
-		slave_thread.start()
-		
-		#ssh_thread(slave,"sudo yum install -y java-1.7.0-openjdk")
-		
-	slave_thread.join()
-	master_thread.join()
+		cmds.append("scp -oStrictHostKeyChecking=no .ssh.tgz " + slave  + ":")
+
+	cmds.append("rm .ssh.tgz")
+
+	# Execute commands on the master node
+	run(ssh_wrap(master, opts.identity_file, cmds, verbose = opts.verbose))
+
+	# Execute commands on the slave nodes
+	slave_ssh_cmds = [ ssh_wrap(slave, opts.identity_file, "tar xzf .ssh.tgz && rm .ssh.tgz", verbose = opts.verbose) for slave in slave_nodes ]
+	run(slave_ssh_cmds, parallelize = True)
 
 
-def ssh_command(host,command):
-	
-	#print "ssh -i " + identity_file + " -o 'UserKnownHostsFile=/dev/null' -o 'CheckHostIP=no' -o 'StrictHostKeyChecking no' "+ username + "@" + host + " '" + command + "'"
-	commands.getstatusoutput("ssh -i " + identity_file + " -o 'UserKnownHostsFile=/dev/null' -o 'CheckHostIP=no' -o 'StrictHostKeyChecking no' "+ username + "@" + host + " '" + command + "'" )
-	
-	
-def deploy_keys(master_nodes,slave_nodes):
+def attach_ssd(cluster_name, opts, master_nodes, slave_nodes):
 
-	print '[ Generating SSH Keys on Master ]'
-	key_file = os.path.basename(identity_file)
+	print '[ Attaching 350GB NVME SSD drive to each node under /mnt/ssd0 ]'
 	master = master_nodes[0]
-	ssh_command(master,"ssh-keygen -q -t rsa -N \"\" -f ~/.ssh/id_rsa")
-	ssh_command(master,"cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys")
-	os.system("scp -i " + identity_file + " -oUserKnownHostsFile=/dev/null -oCheckHostIP=no -oStrictHostKeyChecking=no -o 'StrictHostKeyChecking no' "+ identity_file + " " + username + "@" + master + ":")
-	ssh_command(master,"chmod 600 " + key_file)
-	ssh_command(master,"tar czf .ssh.tgz .ssh")
-	
-	ssh_command(master,"ssh-keyscan -H $(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1) >> ~/.ssh/known_hosts")
-	ssh_command(master,"ssh-keyscan -H $(cat /etc/hosts | grep $(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1) | cut -d\" \" -f2) >> ~/.ssh/known_hosts")
-		
-	print '[ Transfering SSH keys to slaves ]'
-	for slave in slave_nodes:
-		print commands.getstatusoutput("ssh -i " + identity_file + " -oUserKnownHostsFile=/dev/null -oCheckHostIP=no -oStrictHostKeyChecking=no " + username + "@" + master + " 'scp -i " + key_file + " -oStrictHostKeyChecking=no .ssh.tgz " + username +"@" + slave  + ":'")
-		ssh_command(slave,"tar xzf .ssh.tgz")
-		ssh_command(master,"ssh-keyscan -H " + slave + " >> ~/.ssh/known_hosts")
-		ssh_command(slave,"ssh-keyscan -H $(cat /etc/hosts | grep $(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1) | cut -d\" \" -f2) >> ~/.ssh/known_hosts")
-		ssh_command(slave,"ssh-keyscan -H $(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1) >> ~/.ssh/known_hosts")
+
+	cmds = [ 'if [ ! -d /mnt/ssd0 ]; then sudo mkdir /mnt/ssd0; fi',
+			 'sudo /usr/share/google/safe_format_and_mount -m "mkfs.ext4 -F" /dev/disk/by-id/google-local-ssd-0 /mnt/ssd0',
+			 'sudo chmod a+w /mnt/ssd0']
+
+	run(ssh_wrap(master, opts.identity_file, cmds, verbose = opts.verbose))
+
+	slave_cmds = [ ssh_wrap(slave, opts.identity_file, cmds, verbose = opts.verbose) for slave in slave_nodes ]
+	run(slave_cmds, parallelize = True)
 
 
+def install_spark(cluster_name, opts, master_nodes, slave_nodes):
+	print '[ Initializing cluster environment and installing spark (this will take several minutes) ]'
 
-def attach_drive(master_nodes,slave_nodes):
-
-	print '[ Adding new 500GB drive on Master ]'
 	master = master_nodes[0]
+	cmds = [ 'sudo apt-get update -q -y',
+			 'sudo apt-get install -q -y screen htop g++ gfortran openjdk-7-jdk python-pip python-dev libatlas-dev liblapack-dev libzmq-dev libfreetype6-dev libpng-dev',
+			 'sudo pip-2.7 install --upgrade distribute',
+			 'sudo pip-2.7 install --upgrade numpy==1.9.2',
+			 'sudo pip-2.7 install --upgrade scipy==0.15.1',
+			 'sudo pip-2.7 install --upgrade boto==2.36.0']
+	#'wget http://d3kbcqa49mib13.cloudfront.net/spark-1.3.0-bin-hadoop2.4.tgz',
+#			 'tar xvf spark-1.3.0-bin-hadoop2.4.tgz && rm spark-1.3.0-bin-hadoop2.4.tgz',
+#			 'ln -s spark-1.3.0-bin-hadoop2.4 spark']
+	#'echo \"SPARK_JAVA_OPTS+=\\\" -Dspark.local.dir=/mnt/ssd0/spark \\\"\" >> $HOME/spark/conf/spark-env.sh"',
+	#			 '']
+
+	master_cmds = [ ssh_wrap(master, opts.identity_file, cmds, verbose = opts.verbose) ]
+	slave_cmds = [ ssh_wrap(slave, opts.identity_file, cmds, verbose = opts.verbose) for slave in slave_nodes ]
 	
-	command='gcloud compute --project="' + project + '" disks create "' + cluster_name + '-m-disk" --size 500GB --type "pd-standard" --zone ' + zone
+	run(master_cmds + slave_cmds, parallelize = True)
 
-	command = shlex.split(command)		
-	subprocess.call(command)
-	
-	command = 'gcloud compute --project="' + project + '" instances attach-disk ' + cluster_name + '-master --device-name "' + cluster_name + '-m-disk" --disk ' + cluster_name + '-m-disk --zone ' + zone
-	command = shlex.split(command)		
-	subprocess.call(command)
-
-	master_thread = threading.Thread(target=ssh_thread, args=(master,"sudo mkfs.ext3 /dev/disk/by-id/google-"+ cluster_name + "-m-disk " + " -F < /dev/null"))
-	master_thread.start()
-
-	print '[ Adding new 500GB drive on Slaves ]'
-
-	i = 1
-	for slave in slave_nodes:
-
-		master = slave
 		
-		command='gcloud compute --project="' + project + '" disks create "' + cluster_name + '-s' + str(i) + '-disk" --size 500GB --type "pd-standard" --zone ' + zone
-
-		command = shlex.split(command)		
-		subprocess.call(command)
-			
-		command = 'gcloud compute --project="' + project + '" instances attach-disk ' + cluster_name + '-slave' +  str(i) + ' --disk ' + cluster_name + '-s' + str(i) + '-disk --device-name "' + cluster_name + '-s' + str(i) + '-disk" --zone ' + zone
-	
-		command = shlex.split(command)		
-		subprocess.call(command)
-		slave_thread = threading.Thread(target=ssh_thread, args=(slave,"sudo mkfs.ext3 /dev/disk/by-id/google-" + cluster_name + "-s" + str(i) + "-disk -F < /dev/null"))
-		slave_thread.start()
-		i=i+1
-
-	slave_thread.join()
-	master_thread.join()
-
-	print '[ Mounting new Volume ]'
-	enable_sudo(master_nodes[0],"sudo mount /dev/disk/by-id/google-"+ cluster_name + "-m-disk /mnt")
-	enable_sudo(master_nodes[0],"sudo chown " + username + ":" + username + " /mnt")
-	i=1
-	for slave in slave_nodes:			
-		enable_sudo(slave,"sudo mount /dev/disk/by-id/google-"+ cluster_name + "-s" + str(i) +"-disk /mnt")
-		enable_sudo(slave,"sudo chown " + username + ":" + username + " /mnt")
-		i=i+1
-
-	print '[ All volumns mounted, will be available at /mnt ]'
-
 def setup_spark(master_nodes,slave_nodes):
 
 	print '[ Downloading Binaries ]'
@@ -516,9 +529,6 @@ def setup_shark(master_nodes,slave_nodes):
 	print '[ Starting Shark Server ]'
 	ssh_command(master,"cd sigmoid/shark/;./bin/shark --service sharkserver 10000 > log.txt 2>&1 &")
 
-def show_banner():
-
-	os.system("wget -qO- https://s3.amazonaws.com/sigmoidanalytics-builds/spark/0.9.1/gce/configs/banner")
 
 def parse_args():
 	
@@ -552,7 +562,7 @@ def parse_args():
 		"--boot-disk-type", default="pd-standard",
 		help="Boot disk type.  Run \'gcloud compute disk-types list\' to see your options.")
 	parser.add_option(
-		"--boot-disk-size", default="200GB",
+		"--boot-disk-size", default="10GB",
 		help="The size of the boot disk.  Run \'gcloud compute disk-types list\' to see your options.")
 	parser.add_option(
 		"-p", "--project",
@@ -560,6 +570,9 @@ def parse_args():
 	parser.add_option(
 		"-z", "--zone", default="us-central1-f",
 		help="GCE zone to target when launching instances ( you can omit this argument if you set a default with \'gcloud config set compute/zone [zone-name]\'")
+	parser.add_option("--verbose",
+					  action="store_true", dest="verbose", default=False,
+					  help="Show verbose output.")
 	
 	(opts, args) = parser.parse_args()
 	if len(args) != 2:
@@ -568,6 +581,27 @@ def parse_args():
 
 	(action, cluster_name) = args
 	return (opts, action, cluster_name)
+
+
+def	setup_new_cluster(cluster_name, opts):
+	# #Wait some time for machines to bootup
+	# print '[ Waiting 120 Seconds for Machines to start up ]'
+	# time.sleep(120)
+
+	# Get Master/Slave IP Addresses
+	(master_nodes, slave_nodes) = get_cluster_ips(cluster_name, opts)
+
+	# Attach a new empty drive and format it
+	#attach_ssd(cluster_name, opts, master_nodes, slave_nodes)
+
+	# Generate SSH keys and deploy
+	# deploy_keys(cluster_name, opts, master_nodes, slave_nodes)
+
+	# Install Spark and its dependencies
+	install_spark(cluster_name, opts, master_nodes, slave_nodes)
+
+	# #Set up Spark/Shark/Hadoop
+	# setup_spark(master_nodes,slave_nodes)
 
 
 def real_main():
@@ -602,26 +636,7 @@ def real_main():
 		print >> stderr, "Invalid action: %s" % action
 		sys.exit(1)
 
-	# #Wait some time for machines to bootup
-	# print '[ Waiting 120 Seconds for Machines to start up ]'
-	# time.sleep(120)
 
-	# #Get Master/Slave IP Addresses
-	# (master_nodes, slave_nodes) = get_cluster_ips()
-
-	# #Install Java and build-essential
-	# install_java(master_nodes,slave_nodes)
-
-	# #Generate SSH keys and deploy
-	# deploy_keys(master_nodes,slave_nodes)
-
-	# #Attach a new empty drive and format it
-	# attach_drive(master_nodes,slave_nodes)
-
-	# #Set up Spark/Shark/Hadoop
-	# setup_spark(master_nodes,slave_nodes)
-
-	
 def main():
 	try:
 		real_main()
