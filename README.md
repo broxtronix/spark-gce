@@ -1,7 +1,7 @@
 Spark GCE
 =========
 
-Spark GCE is like Spark Ec2 but for those who run their cluster on Google Cloud.
+Spark GCE is like Spark Ec2 but for those who run their cluster on Google Cloud.  
 
   - Make Sure you have installed and authenticated gcutils where you are running this script.
   - Helps you launch a spark cluster in the Google Cloud
@@ -50,6 +50,9 @@ python spark_gce.py
 
 Need Help?
 -------------
-- Drop us an email: mayur@sigmoidanalytics.com
-- Read Our Blog: http://www.sigmoidanalytics.com/spark-gce/
-- Read Our Wiki: http://docs.sigmoidanalytics.com/index.php/SparkGCE
+This script was originally developed by Sigmoid Analytics, but has been modified and updated by @broxtronix.
+
+Documentation of the original script can be found here:
+
+- Blog: http://www.sigmoidanalytics.com/spark-gce/
+- Wiki: http://docs.sigmoidanalytics.com/index.php/SparkGCE

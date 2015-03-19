@@ -190,7 +190,7 @@ def launch_cluster(cluster_name, opts):
 		zone_str = ''
 
 	# Set up the network
-	# setup_network(cluster_name, opts)
+	#setup_network(cluster_name, opts)
  
 	# Start master nodes & slave nodes
 	cmds = []
@@ -330,7 +330,7 @@ def deploy_keys(cluster_name, opts, master_nodes, slave_nodes):
 			 "tar czf .ssh.tgz .ssh"]
 
 	for slave in slave_nodes:
-		cmds.append("scp -oStrictHostKeyChecking=no .ssh.tgz " + slave  + ":")
+		cmds.append("scp -oStrictHostKeyChecking=no .ssh.tgz " + slave[1]  + ":")
 
 	cmds.append("rm .ssh.tgz")
 
@@ -592,10 +592,10 @@ def	setup_new_cluster(cluster_name, opts):
 	(master_nodes, slave_nodes) = get_cluster_ips(cluster_name, opts)
 
 	# Attach a new empty drive and format it
-	#attach_ssd(cluster_name, opts, master_nodes, slave_nodes)
+	# attach_ssd(cluster_name, opts, master_nodes, slave_nodes)
 
 	# Generate SSH keys and deploy
-	# deploy_keys(cluster_name, opts, master_nodes, slave_nodes)
+	deploy_keys(cluster_name, opts, master_nodes, slave_nodes)
 
 	# Install Spark and its dependencies
 	install_spark(cluster_name, opts, master_nodes, slave_nodes)
