@@ -613,7 +613,25 @@ def	setup_new_cluster(cluster_name, opts):
 	# Initialize the cluster, installing important dependencies
 	install_spark(cluster_name, opts, master_nodes, slave_nodes)
 
+	
+def mosh_cluster(cluster_name, opts):
+	import subprocess
 
+	(master_nodes, slave_nodes) = get_cluster_ips(cluster_name, opts)
+	
+	cmd = 'mosh --ssh="ssh -i ' + opts.identity_file + ' -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no\" ' + str(master_nodes[0][1])
+	subprocess.check_call(shlex.split(cmd))
+
+	
+def ssh_cluster(cluster_name, opts):
+	import subprocess
+
+	(master_nodes, slave_nodes) = get_cluster_ips(cluster_name, opts)
+	
+	cmd = 'ssh -i ' + opts.identity_file + ' -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no ' + str(master_nodes[0][1])
+	subprocess.check_call(shlex.split(cmd))
+
+	
 def real_main():
 
 	print "Spark for Google Compute Engine v0.2"
@@ -639,8 +657,11 @@ def real_main():
 	elif action == "destroy":
 		destroy_cluster(cluster_name, opts)
 
-	elif action == "login":
-		login_cluster(cluster_name, opts)
+	elif action == "ssh":
+		ssh_cluster(cluster_name, opts)
+
+	elif action == "mosh":
+		mosh_cluster(cluster_name, opts)
 
 	else:
 		print >> stderr, "Invalid action: %s" % action
