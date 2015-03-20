@@ -163,6 +163,7 @@ def setup_network(cluster_name, opts):
 	# Uncomment the above and comment the below section if you don't want to open all ports for public.
 	# cmds.append( command_prefix + ' compute firewall-rules delete ' + cluster_name + '-internal' )
 	cmds.append( command_prefix + ' firewall-rules create ' + cluster_name + '-internal --network ' + cluster_name + '-network --allow tcp udp icmp' )
+	cmds.append( command_prefix + ' firewall-rules create ' + cluster_name + '-spark-external --network ' + cluster_name + '-network --allow tcp:8080 tcp:4040' )
 	run(cmds)
 
 def delete_network(cluster_name, opts):
@@ -173,6 +174,7 @@ def delete_network(cluster_name, opts):
 	# Uncomment the above and comment the below section if you don't want to open all ports for public.
 	# cmds.append( command_prefix + ' compute firewall-rules delete ' + cluster_name + '-internal --quiet' )
 	cmds.append(  command_prefix + ' firewall-rules delete ' + cluster_name + '-internal --quiet' )
+	cmds.append(  command_prefix + ' firewall-rules delete ' + cluster_name + '-spark-external --quiet' )
 	cmds.append( command_prefix + ' networks delete "' + cluster_name + '-network" --quiet' )
 	run(cmds)
 
@@ -190,14 +192,14 @@ def launch_cluster(cluster_name, opts):
 		zone_str = ''
 
 	# Set up the network
-	#setup_network(cluster_name, opts)
+	setup_network(cluster_name, opts)
  
 	# Start master nodes & slave nodes
 	cmds = []
 	cmds.append( command_prefix + ' instances create "' + cluster_name + '-master" --machine-type "' + opts.master_instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.read_only" --image "https://www.googleapis.com/compute/v1/projects/gce-nvme/global/images/nvme-backports-debian-7-wheezy-v20141108" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-md" --local-ssd interface=nvme' + zone_str )
 	for i in xrange(opts.slaves):
 		cmds.append( command_prefix + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.read_only" --image "https://www.googleapis.com/compute/v1/projects/gce-nvme/global/images/nvme-backports-debian-7-wheezy-v20141108" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd" --local-ssd interface=nvme' + zone_str )
-	# run(cmds, parallelize = True)
+	run(cmds, parallelize = True)
 
 	# Set up the cluster by installing all the necessary software!
 	setup_new_cluster(cluster_name, opts)
@@ -327,19 +329,34 @@ def deploy_keys(cluster_name, opts, master_nodes, slave_nodes):
 
 	cmds = [ "rm -f ~/.ssh/id_rsa && ssh-keygen -q -t rsa -N \"\" -f ~/.ssh/id_rsa",
 			 "cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys",
-			 "tar czf .ssh.tgz .ssh"]
+			 "tar czf .ssh.tgz .ssh",
+			 "ssh-keyscan -H $(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1) >> ~/.ssh/known_hosts",
+			 "ssh-keyscan -H $(cat /etc/hosts | grep $(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1) | cut -d\" \" -f2) >> ~/.ssh/known_hosts"]
 
-	for slave in slave_nodes:
-		cmds.append("scp -oStrictHostKeyChecking=no .ssh.tgz " + slave[1]  + ":")
-
-	cmds.append("rm .ssh.tgz")
-
-	# Execute commands on the master node
+	# Create keys on the master node, add them into authorized_keys, and then pack up the archive
 	run(ssh_wrap(master, opts.identity_file, cmds, verbose = opts.verbose))
 
-	# Execute commands on the slave nodes
-	slave_ssh_cmds = [ ssh_wrap(slave, opts.identity_file, "tar xzf .ssh.tgz && rm .ssh.tgz", verbose = opts.verbose) for slave in slave_nodes ]
+	# Copy the ssh keys locally, and then upload to the slaves.  
+	cmds = [ "gcloud compute copy-files " + cluster_name + "-master:.ssh.tgz /tmp/spark_gce_ssh.tgz" ]
+	for slave in slave_nodes:
+		cmds.append( "gcloud compute copy-files /tmp/spark_gce_ssh.tgz " + slave[0] + ":" )
+	cmds.append("rm -f /tmp/spark_gce_ssh.tgz")
+	run(cmds)
+	
+	# Unpack the ssh keys on the slave nodes
+	slave_ssh_cmds = []
+	for slave in slave_nodes:
+		slave_ssh_cmds.append( ssh_wrap( slave,
+										 opts.identity_file,
+										 [ "tar xzf spark_gce_ssh.tgz && rm spark_gce_ssh.tgz",
+										   "ssh-keyscan -H " + slave[1] + " >> ~/.ssh/known_hosts",
+										   "ssh-keyscan -H $(cat /etc/hosts | grep $(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1) | cut -d\" \" -f2) >> ~/.ssh/known_hosts",
+										   "ssh-keyscan -H $(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1) >> ~/.ssh/known_hosts"],
+										 verbose = opts.verbose ) )
 	run(slave_ssh_cmds, parallelize = True)
+
+	# Clean up the archive on the master node
+	run(ssh_wrap(master, opts.identity_file, "rm -f .ssh.tgz", verbose = opts.verbose))
 
 
 def attach_ssd(cluster_name, opts, master_nodes, slave_nodes):
@@ -357,86 +374,79 @@ def attach_ssd(cluster_name, opts, master_nodes, slave_nodes):
 	run(slave_cmds, parallelize = True)
 
 
-def install_spark(cluster_name, opts, master_nodes, slave_nodes):
+def initialize_cluster(cluster_name, opts, master_nodes, slave_nodes):
 	print '[ Initializing cluster environment and installing spark (this will take several minutes) ]'
-
 	master = master_nodes[0]
+
 	cmds = [ 'sudo apt-get update -q -y',
-			 'sudo apt-get install -q -y screen htop g++ gfortran openjdk-7-jdk python-pip python-dev libatlas-dev liblapack-dev libzmq-dev libfreetype6-dev libpng-dev',
-			 'sudo pip-2.7 install --upgrade distribute',
-			 'sudo pip-2.7 install --upgrade numpy==1.9.2',
-			 'sudo pip-2.7 install --upgrade scipy==0.15.1',
-			 'sudo pip-2.7 install --upgrade boto==2.36.0']
-	#'wget http://d3kbcqa49mib13.cloudfront.net/spark-1.3.0-bin-hadoop2.4.tgz',
-#			 'tar xvf spark-1.3.0-bin-hadoop2.4.tgz && rm spark-1.3.0-bin-hadoop2.4.tgz',
-#			 'ln -s spark-1.3.0-bin-hadoop2.4 spark']
-	#'echo \"SPARK_JAVA_OPTS+=\\\" -Dspark.local.dir=/mnt/ssd0/spark \\\"\" >> $HOME/spark/conf/spark-env.sh"',
-	#			 '']
+			 'sudo apt-get install -q -y screen less mosh htop g++ openjdk-7-jdk',
+			 'wget http://09c8d0b2229f813c1b93-c95ac804525aac4b6dba79b00b39d1d3.r79.cf1.rackcdn.com/Anaconda-2.1.0-Linux-x86_64.sh',
+			 'bash Anaconda-2.1.0-Linux-x86_64.sh -b && rm Anaconda-2.1.0-Linux-x86_64.sh',
+			 'echo \'export PATH=\$PATH:\$HOME/spark/bin:\$HOME/anaconda/bin\' >> $HOME/.bashrc']
 
 	master_cmds = [ ssh_wrap(master, opts.identity_file, cmds, verbose = opts.verbose) ]
 	slave_cmds = [ ssh_wrap(slave, opts.identity_file, cmds, verbose = opts.verbose) for slave in slave_nodes ]
 	
 	run(master_cmds + slave_cmds, parallelize = True)
 
-		
-def setup_spark(master_nodes,slave_nodes):
 
-	print '[ Downloading Binaries ]'
-	
+def install_spark(cluster_name, opts, master_nodes, slave_nodes):
+	print '[ Installing and configuring spark ]'
 	master = master_nodes[0]
-	
-	ssh_command(master,"rm -fr sigmoid")
-	ssh_command(master,"mkdir sigmoid")
-	ssh_command(master,"cd sigmoid;wget https://s3.amazonaws.com/sigmoidanalytics-builds/spark/1.2.0/spark-1.2.0-bin-cdh4.tgz")
-	ssh_command(master,"cd sigmoid;wget https://s3.amazonaws.com/sigmoidanalytics-builds/spark/0.9.1/gce/scala.tgz")
-	ssh_command(master,"cd sigmoid;tar zxf spark-1.2.0-bin-cdh4.tgz;rm spark-1.2.0-bin-cdh4.tgz")
-	ssh_command(master,"cd sigmoid;tar zxf scala.tgz;rm scala.tgz")
-	
 
-	print '[ Updating Spark Configurations ]'
-	ssh_command(master,"cd sigmoid;cd spark-1.2.0-bin-cdh4/conf;cp spark-env.sh.template spark-env.sh")
-	ssh_command(master,"cd sigmoid;cd spark-1.2.0-bin-cdh4/conf;echo 'export SCALA_HOME=\"/home/`whoami`/sigmoid/scala\"' >> spark-env.sh")
-	ssh_command(master,"cd sigmoid;cd spark-1.2.0-bin-cdh4/conf;echo 'export SPARK_MEM=2454m' >> spark-env.sh")
-	ssh_command(master,"cd sigmoid;cd spark-1.2.0-bin-cdh4/conf;echo \"SPARK_JAVA_OPTS+=\\\" -Dspark.local.dir=/mnt/spark \\\"\" >> spark-env.sh")
-	ssh_command(master,"cd sigmoid;cd spark-1.2.0-bin-cdh4/conf;echo 'export SPARK_JAVA_OPTS' >> spark-env.sh")
-	ssh_command(master,"cd sigmoid;cd spark-1.2.0-bin-cdh4/conf;echo 'export SPARK_MASTER_IP=PUT_MASTER_IP_HERE' >> spark-env.sh")
-	ssh_command(master,"cd sigmoid;cd spark-1.2.0-bin-cdh4/conf;echo 'export MASTER=spark://PUT_MASTER_IP_HERE:7077' >> spark-env.sh")
-	ssh_command(master,"cd sigmoid;cd spark-1.2.0-bin-cdh4/conf;echo 'export JAVA_HOME=/usr/lib/jvm/java-1.7.0-openjdk-1.7.0.75.x86_64' >> spark-env.sh")
-	
+	# Install Spark and SCALA
+	cmds = [ 'if [ ! -d $HOME/packages ]; then mkdir $HOME/packages; fi',
+			 'cd $HOME/packages && wget http://d3kbcqa49mib13.cloudfront.net/spark-1.3.0-bin-cdh4.tgz',
+			 'cd $HOME/packages && tar xvf spark-1.3.0-bin-cdh4.tgz && rm spark-1.3.0-bin-cdh4.tgz',
+			 'ln -s $HOME/packages/spark-1.3.0-bin-cdh4 $HOME/spark',
+			 'cd $HOME/packages && wget http://downloads.typesafe.com/scala/2.11.6/scala-2.11.6.tgz',
+			 'cd $HOME/packages && tar xvzf scala-2.11.6.tgz && rm -rf scala-2.11.6.tgz']
+	run(ssh_wrap(master, opts.identity_file, cmds, verbose = opts.verbose))
 
+	# Set up the spark-env.conf file
+	cmds = ['cd $HOME/spark/conf && cp spark-env.sh.template spark-env.sh',
+			'cd $HOME/spark/conf && echo \'export SPARK_LOCAL_DIRS="/mnt/ssd0/spark"\' >> spark-env.sh',
+			'cd $HOME/spark/conf && echo \'export SPARK_WORKER_INSTANCES=1\' >> spark-env.sh',
+			'cd $HOME/spark/conf && echo \'export SPARK_WORKER_CORES=16\' >> spark-env.sh',
+			'cd $HOME/spark/conf && echo \'\' >> spark-env.sh',
+			'cd $HOME/spark/conf && echo \'export HADOOP_HOME="\$HOME/ephemeral-hdfs"\' >> spark-env.sh',
+			'cd $HOME/spark/conf && echo \'export SPARK_MASTER_IP=PUT_INTERNAL_MASTER_IP_HERE\' >> spark-env.sh',
+			'cd $HOME/spark/conf && echo \'export MASTER=spark://PUT_INTERNAL_MASTER_IP_HERE:7077\' >> spark-env.sh',
+			'cd $HOME/spark/conf && echo \'\' >> spark-env.sh',
+			'cd $HOME/spark/conf && echo \'# Bind Spark\'s web UIs to this machine\'s public EC2 hostname:\' >> spark-env.sh',
+			'cd $HOME/spark/conf && echo \'export SPARK_PUBLIC_DNS=\\\\\`wget -q -O - http://icanhazip.com/\\\\\`\' >> spark-env.sh',
+			'cd $HOME/spark/conf && echo \'export SPARK_DRIVER_MEMORY=20g\' >> spark-env.sh',
+			'cd $HOME/spark/conf && echo \'\' >> spark-env.sh',
+			'cd $HOME/spark/conf && echo \'export PYSPARK_PYTHON=\$HOME/anaconda/bin/ipython\' >> spark-env.sh',
+			'cd $HOME/spark/conf && echo \'export PYSPARK_DRIVER_PYTHON=\$HOME/anaconda/bin/python\' >> spark-env.sh',
+			'cd $HOME/spark/conf && echo \'export SPARK_DRIVER_MEMORY=20g\' >> spark-env.sh',
+			'cd $HOME/spark/conf && chmod +x spark-env.sh']
+	run(ssh_wrap(master, opts.identity_file, cmds, verbose = opts.verbose))
+	run(ssh_wrap(master, opts.identity_file, 'sed -i "s/PUT_INTERNAL_MASTER_IP_HERE/$(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1)/g" $HOME/spark/conf/spark-env.sh', verbose = opts.verbose) )
+
+	# Populate the file containing the list of all current slave nodes
 	for slave in slave_nodes:
-		ssh_command(master,"echo " + slave + " >> sigmoid/spark-1.2.0-bin-cdh4/conf/slaves")
+		run(ssh_wrap(master, opts.identity_file, 'echo ' + slave[1] + ' >> $HOME/spark/conf/slaves', verbose = opts.verbose))
+		
+	# Create the Spark scratch directory on the local SSD
+	run(ssh_wrap(master, opts.identity_file, 'if [ ! -d /mnt/ssd0/spark ]; then mkdir /mnt/ssd0/spark; fi', verbose = opts.verbose))
+	run([ ssh_wrap(slave, opts.identity_file, 'if [ ! -d /mnt/ssd0/spark ]; then mkdir /mnt/ssd0/spark; fi', verbose = opts.verbose) for slave in slave_nodes ], parallelize = True)
 
-	
-	ssh_command(master,"sed -i \"s/PUT_MASTER_IP_HERE/$(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1)/g\" sigmoid/spark-1.2.0-bin-cdh4/conf/spark-env.sh")
-	
-	ssh_command(master,"chmod +x sigmoid/spark-1.2.0-bin-cdh4/conf/spark-env.sh")
-
+	# Copy the spark directory from the master node to the slave nodes
 	print '[ Rsyncing Spark to all slaves ]'
-
-	#Change permissions
-	enable_sudo(master,"sudo chown " + username + ":" + username + " /mnt")
-	i=1
-	for slave in slave_nodes:			
-		enable_sudo(slave,"sudo chown " + username + ":" + username + " /mnt")
-
-
+	cmds = []
 	for slave in slave_nodes:
-		ssh_command(master,"rsync -za /home/" + username + "/sigmoid " + slave + ":")
-		ssh_command(slave,"mkdir /mnt/spark")
+		cmds.append( ssh_wrap(master, opts.identity_file, 'rsync -za $HOME/packages/spark-1.3.0-bin-cdh4 ' + slave[1] + ':packages/', verbose = opts.verbose) )
+	run(cmds, parallelize = True)
+	run([ ssh_wrap(slave, opts.identity_file, 'ln -s $HOME/packages/spark-1.3.0-bin-cdh4 $HOME/spark', verbose = opts.verbose) for slave in slave_nodes ], parallelize = True)
 
-	ssh_command(master,"mkdir /mnt/spark")
+	
 	print '[ Starting Spark Cluster ]'
-	ssh_command(master,"sigmoid/spark-1.2.0-bin-cdh4/sbin/start-all.sh")
+	run(ssh_wrap(master, opts.identity_file, '$HOME/spark/sbin/start-all.sh', verbose = opts.verbose) )
+
+	print "\n\nSpark Master Started, WebUI available at : http://" + master[1] + ":8080\n\n"
+
 	
-
-	#setup_shark(master_nodes,slave_nodes)
-	
-	setup_hadoop(master_nodes,slave_nodes)
-
-
-	print "\n\nSpark Master Started, WebUI available at : http://" + master + ":8080"
-
 def setup_hadoop(master_nodes,slave_nodes):
 
 	master = master_nodes[0]
@@ -592,21 +602,21 @@ def	setup_new_cluster(cluster_name, opts):
 	(master_nodes, slave_nodes) = get_cluster_ips(cluster_name, opts)
 
 	# Attach a new empty drive and format it
-	# attach_ssd(cluster_name, opts, master_nodes, slave_nodes)
+	attach_ssd(cluster_name, opts, master_nodes, slave_nodes)
 
 	# Generate SSH keys and deploy
 	deploy_keys(cluster_name, opts, master_nodes, slave_nodes)
 
-	# Install Spark and its dependencies
-	install_spark(cluster_name, opts, master_nodes, slave_nodes)
+	# Initialize the cluster, installing important dependencies
+	initialize_cluster(cluster_name, opts, master_nodes, slave_nodes)
 
-	# #Set up Spark/Shark/Hadoop
-	# setup_spark(master_nodes,slave_nodes)
+	# Initialize the cluster, installing important dependencies
+	install_spark(cluster_name, opts, master_nodes, slave_nodes)
 
 
 def real_main():
 
-	print "Spark Google Compute Engine v0.2"
+	print "Spark for Google Compute Engine v0.2"
 	print ""
 	print "[ Script Started ]"	
 
