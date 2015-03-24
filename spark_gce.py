@@ -193,7 +193,7 @@ def launch_cluster(cluster_name, opts):
 		zone_str = ''
 
 	# Set up the network
-	setup_network(cluster_name, opts)
+	#setup_network(cluster_name, opts)
  
 	# Start master nodes & slave nodes
 	cmds = []
@@ -202,26 +202,27 @@ def launch_cluster(cluster_name, opts):
 		cmds.append( command_prefix + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.read_only" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd"' + zone_str )
 
 	print '[ Launching nodes ]'
-	run(cmds, parallelize = True)
+	#run(cmds, parallelize = True)
 
 	# Get Master/Slave IP Addresses
 	(master_nodes, slave_nodes) = get_cluster_ips(cluster_name, opts)
 
 	# Generate SSH keys and deploy to workers and slaves
-	deploy_ssh_keys(cluster_name, opts, master_nodes, slave_nodes)
+	#deploy_ssh_keys(cluster_name, opts, master_nodes, slave_nodes)
 
 	# Attach a new empty drive and format it
-	attach_persistent_scratch_disks(cluster_name, opts, master_nodes, slave_nodes)
+	#attach_persistent_scratch_disks(cluster_name, opts, master_nodes, slave_nodes)
 	#attach_ssd(cluster_name, opts, master_nodes, slave_nodes)
 
 	# Initialize the cluster, installing important dependencies
-	initialize_cluster(cluster_name, opts, master_nodes, slave_nodes)
+	#initialize_cluster(cluster_name, opts, master_nodes, slave_nodes)
 
-	# Install Spark
-	install_spark(cluster_name, opts, master_nodes, slave_nodes)
-	
-	# Configure and start Spark
-	configure_and_start_spark(cluster_name, opts, master_nodes, slave_nodes)
+	# Install, configure, and start ganglia
+	install_ganglia(cluster_name, opts, master_nodes, slave_nodes)
+
+	# Install, configure and start Spark
+	#install_spark(cluster_name, opts, master_nodes, slave_nodes)
+	#configure_and_start_spark(cluster_name, opts, master_nodes, slave_nodes)
 
 
 def destroy_cluster(cluster_name, opts):
@@ -605,18 +606,33 @@ def install_ganglia(cluster_name, opts, master_nodes, slave_nodes):
 	print '[ Installing Ganglia ]'
 	master = master_nodes[0]
 	
-	# Install Spark and Scala
-	cmds = [ 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -q -y ganglia-monitor',
-			 'rm -rf /var/lib/ganglia/rrds/* && rm -rf /mnt/ganglia/rrds/*',
-			 'mkdir -p /mnt/ganglia/rrds',
+	# Install and configure gmond everywhere
+	cmds = [ 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -q -y ganglia-monitor gmetad',
+			 'sudo rm -rf /var/lib/ganglia/rrds/* && sudo rm -rf /mnt/ganglia/rrds/*',
+			 'sudo mkdir -p /mnt/ganglia/rrds',
 			 'sudo chown -R nobody:root /mnt/ganglia/rrds',
 			 'sudo rm -rf /var/lib/ganglia/rrds',
-			 'sudo ln -s /mnt/ganglia/rrds /var/lib/ganglia/rrds' ]
-	run(ssh_wrap(master, opts.identity_file, cmds, verbose = opts.verbose))
-	# Install on slaves as well
+			 'sudo ln -s /mnt/ganglia/rrds /var/lib/ganglia/rrds',
+			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/etc/ganglia/gmond.conf',
+			 'sed -i -e  "s/{{master-node}}/' + cluster_name + '-master/g" gmond.conf', 
+			 'sudo mv gmond.conf /etc/ganglia/ && rm -f gmond.conf',
+			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/etc/ganglia/gmetad.conf',
+			 'sed -i -e  "s/{{master-node}}/' + cluster_name + '-master/g" gmetad.conf',
+			 'sudo mv gmetad.conf /etc/ganglia/ && rm -f gmetad.conf',
+	         'sudo service ganglia-monitor restart']
+	run([ssh_wrap(node, opts.identity_file, cmds, verbose = opts.verbose) for node in (slave_nodes + master_nodes)])
 
-	# Install gmetad and the ganglia web front-end
-	run(ssh_wrap(master, opts.identity_file, 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -q -y gmetad ganglia-webfrontend', verbose = opts.verbose))
+	# Install gmetad and the ganglia web front-end on the master node
+	cmds = [ 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -q -y ganglia-webfrontend',
+			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/etc/apache2/ports.conf',
+			 'sudo mv ports.conf /etc/apache2/ && rm -f ports.conf',
+			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/etc/apache2/sites-enabled/https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/etc/apache2/sites-enabled/000-default.conf',
+			 'sudo mv 000-default.conf /etc/apache2/sites-enabled/ && rm -f 000-default.conf',
+			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/etc/apache2/sites-enabled/https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/etc/apache2/sites-enabled/ganglia.conf',
+			 'sudo mv ganglia.conf /etc/apache2/sites-enabled/ && rm -f ganglia.conf',
+			 'sudo service gmetad restart && sudo service apache2 restart'
+		 ]
+	run(ssh_wrap(master, opts.identity_file, cmds, verbose = opts.verbose))
 
 
 def setup_hadoop(master_nodes,slave_nodes):
