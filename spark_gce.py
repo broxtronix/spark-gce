@@ -200,6 +200,8 @@ def launch_cluster(cluster_name, opts):
 	cmds.append( command_prefix + ' instances create "' + cluster_name + '-master" --machine-type "' + opts.master_instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.read_only" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-md"' + zone_str )
 	for i in xrange(opts.slaves):
 		cmds.append( command_prefix + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.read_only" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd"' + zone_str )
+
+	print '[ Launching nodes ]'
 	run(cmds, parallelize = True)
 
 	# Get Master/Slave IP Addresses
@@ -278,7 +280,7 @@ def stop_cluster(cluster_name, opts):
 	proceed = raw_input('Cluster %s with %d nodes will be stopped.  Data on scratch drives will be lost, but root disks will be preserved.  Are you sure you want to proceed? (y/N) : ' % (cluster_name, len(cmds)))
 	if proceed == 'y' or proceed == 'Y':
 
-		print '[ Stopping %d nodes ]' % len(cmds)
+		print '[ Stopping nodes ]'
 		run(cmds, parallelize = True)
 
 		# Clean up scratch disks
@@ -538,7 +540,7 @@ def initialize_cluster(cluster_name, opts, master_nodes, slave_nodes):
 
 
 def configure_and_start_spark(cluster_name, opts, master_nodes, slave_nodes):
-	print '[ Configuring and starting Spark ]'
+	print '[ Configuring Spark ]'
 	master = master_nodes[0]
 
 	# Populate the file containing the list of all current slave nodes
@@ -551,7 +553,6 @@ def configure_and_start_spark(cluster_name, opts, master_nodes, slave_nodes):
 	run([ ssh_wrap(slave, opts.identity_file, 'if [ ! -d /mnt/spark ]; then mkdir /mnt/spark; fi', verbose = opts.verbose) for slave in slave_nodes ], parallelize = True)
 
 	# Copy the spark directory from the master node to the slave nodes
-	print '[ Rsyncing Spark to all slaves ]'
 	cmds = []
 	for slave in slave_nodes:
 		cmds.append( ssh_wrap(master, opts.identity_file, 'rsync -e \"ssh -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no\" -za $HOME/packages/spark-1.3.0-bin-cdh4 ' + slave[1] + ':packages/', verbose = opts.verbose) )
@@ -599,6 +600,23 @@ def install_spark(cluster_name, opts, master_nodes, slave_nodes):
 
 	# Create a symlink on the slaves
 	run([ ssh_wrap(slave, opts.identity_file, 'ln -s $HOME/packages/spark-1.3.0-bin-cdh4 $HOME/spark', verbose = opts.verbose) for slave in slave_nodes ], parallelize = True)
+
+def install_ganglia(cluster_name, opts, master_nodes, slave_nodes):
+	print '[ Installing Ganglia ]'
+	master = master_nodes[0]
+	
+	# Install Spark and Scala
+	cmds = [ 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -q -y ganglia-monitor',
+			 'rm -rf /var/lib/ganglia/rrds/* && rm -rf /mnt/ganglia/rrds/*',
+			 'mkdir -p /mnt/ganglia/rrds',
+			 'sudo chown -R nobody:root /mnt/ganglia/rrds',
+			 'sudo rm -rf /var/lib/ganglia/rrds',
+			 'sudo ln -s /mnt/ganglia/rrds /var/lib/ganglia/rrds' ]
+	run(ssh_wrap(master, opts.identity_file, cmds, verbose = opts.verbose))
+	# Install on slaves as well
+
+	# Install gmetad and the ganglia web front-end
+	run(ssh_wrap(master, opts.identity_file, 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -q -y gmetad ganglia-webfrontend', verbose = opts.verbose))
 
 
 def setup_hadoop(master_nodes,slave_nodes):
