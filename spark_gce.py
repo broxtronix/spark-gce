@@ -194,7 +194,7 @@ def launch_cluster(cluster_name, opts):
 		zone_str = ''
 
 	# Set up the network
-	setup_network(cluster_name, opts)
+	#setup_network(cluster_name, opts)
  
 	# Start master nodes & slave nodes
 	cmds = []
@@ -468,7 +468,7 @@ def ssh_wrap(host, identity_file, cmds, verbose = False):
 			print "Error: attempting to ssh into machine instance \"%s\" without a public IP address.  Exiting." % (host["host_name"])
 			sys.exit(1)
 			
-		result.append( "ssh -i " + identity_file + " -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no " + username + "@" + host['host_ip'] + " '" + cmd + "'" )
+		result.append( "ssh -i " + identity_file + " -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no -o LogLevel=quiet " + username + "@" + host['host_ip'] + " '" + cmd + "'" )
 	return result
 
 
@@ -566,10 +566,13 @@ def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
 	print '[ Installing software dependencies (this will take several minutes) ]'
 
 	cmds = [ 'sudo apt-get update -q -y',
-			 'sudo apt-get install -q -y screen less git mosh bzip2 htop g++ openjdk-7-jdk',
+			 'sudo apt-get install -q -y screen less git mosh pssh emacs bzip2 htop g++ openjdk-7-jdk',
 			 'wget http://09c8d0b2229f813c1b93-c95ac804525aac4b6dba79b00b39d1d3.r79.cf1.rackcdn.com/Anaconda-2.1.0-Linux-x86_64.sh',
 			 'bash Anaconda-2.1.0-Linux-x86_64.sh -b && rm Anaconda-2.1.0-Linux-x86_64.sh',
-			 'echo \'export PATH=\$HOME/anaconda/bin:\$PATH:\$HOME/spark/bin\' >> $HOME/.bashrc']
+			 'echo \'export PATH=\$HOME/anaconda/bin:\$PATH:\$HOME/spark/bin\' >> $HOME/.bashrc',
+			 'ipython profile create default',
+			 'echo \'c.NotebookApp.open_browser = False\' >> \$HOME/.ipython/profile_default/ipython_notebook_config.py'
+		 ]
 
 	master_cmds = [ ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose) ]
 	slave_cmds = [ ssh_wrap(slave, opts.identity_file, cmds, verbose = opts.verbose) for slave in slave_nodes ]
@@ -606,7 +609,7 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
 	cmds = [ 'if [ ! -d $HOME/packages ]; then mkdir $HOME/packages; fi',
 			 'cd $HOME/packages && wget http://d3kbcqa49mib13.cloudfront.net/spark-1.3.0-bin-cdh4.tgz',
 			 'cd $HOME/packages && tar xvf spark-1.3.0-bin-cdh4.tgz && rm spark-1.3.0-bin-cdh4.tgz',
-			 'ln -s $HOME/packages/spark-1.3.0-bin-cdh4 $HOME/spark',
+			 'rm -f $HOME/spark && ln -s $HOME/packages/spark-1.3.0-bin-cdh4 $HOME/spark',
 			 'cd $HOME/packages && wget http://downloads.typesafe.com/scala/2.11.6/scala-2.11.6.tgz',
 			 'cd $HOME/packages && tar xvzf scala-2.11.6.tgz && rm -rf scala-2.11.6.tgz']
 	run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
@@ -623,18 +626,35 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
 			'cd $HOME/spark/conf && echo \'\' >> spark-env.sh',
 			'cd $HOME/spark/conf && echo \'# Bind Spark\'s web UIs to this machine\'s public EC2 hostname:\' >> spark-env.sh',
 			'cd $HOME/spark/conf && echo \'export SPARK_PUBLIC_DNS=\\\\\`wget -q -O - http://icanhazip.com/\\\\\`\' >> spark-env.sh',
-			'cd $HOME/spark/conf && echo \'export SPARK_DRIVER_MEMORY=20g\' >> spark-env.sh',
 			'cd $HOME/spark/conf && echo \'\' >> spark-env.sh',
-			'cd $HOME/spark/conf && echo \'export PYSPARK_PYTHON=\$HOME/anaconda/bin/ipython\' >> spark-env.sh',
-			'cd $HOME/spark/conf && echo \'export PYSPARK_DRIVER_PYTHON=\$HOME/anaconda/bin/python\' >> spark-env.sh',
-			'cd $HOME/spark/conf && echo \'export SPARK_DRIVER_MEMORY=20g\' >> spark-env.sh',
+			'cd $HOME/spark/conf && echo \'export SPARK_DRIVER_MEMORY=30g\' >> spark-env.sh',
+			'cd $HOME/spark/conf && echo \'export SPARK_WORKER_MEMORY=90g\' >> spark-env.sh',
+			'cd $HOME/spark/conf && echo \'\' >> spark-env.sh',
+			'cd $HOME/spark/conf && echo \'export PYSPARK_DRIVER_PYTHON=\$HOME/anaconda/bin/ipython\' >> spark-env.sh',
+			'cd $HOME/spark/conf && echo \'export PYSPARK_PYTHON=\$HOME/anaconda/bin/python\' >> spark-env.sh',
 			'cd $HOME/spark/conf && chmod +x spark-env.sh',
 			'echo \'export SPARK_HOME=\$HOME:spark\' >> $HOME/.bashrc']
 	run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
 	run(ssh_wrap(master_node, opts.identity_file, 'sed -i "s/PUT_INTERNAL_MASTER_IP_HERE/$(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1)/g" $HOME/spark/conf/spark-env.sh', verbose = opts.verbose) )
 
-	# Create a symlink on the slaves
-	run([ ssh_wrap(slave, opts.identity_file, 'ln -s $HOME/packages/spark-1.3.0-bin-cdh4 $HOME/spark', verbose = opts.verbose) for slave in slave_nodes ], parallelize = True)
+	# Set up the spark-defaults.conf file
+	cmds = ['cd $HOME/spark/conf && cp spark-defaults.conf.template spark-defaults.conf',
+			'echo \'spark.driver.memory 40g\' >> $HOME/spark/conf/spark-defaults.conf',
+			'echo \'spark.executor.memory 90g\' >> $HOME/spark/conf/spark-defaults.conf',
+			'echo \'spark.driver.maxResultSize = 10g\' >> $HOME/spark/conf/spark-defaults.conf',
+			'echo \'spark.akka.frameSize = 2047\' >> $HOME/spark/conf/spark-defaults.conf',
+			'echo \'spark.rdd.compress = true\' >> $HOME/spark/conf/spark-defaults.conf',
+			'echo \'spark.kryoserializer.buffer.max.mb = 2047\' >> $HOME/spark/conf/spark-defaults.conf'
+			]
+	run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
+
+	# Install the copy-dir script
+	cmds = ['cd $HOME/spark/bin && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/copy-dir',
+			'chmod 755 $HOME/spark/bin/copy-dir']
+	run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
+	
+	# Create a symlink on the slaves (this symlink will be broken at first, but work once we rsync the directory over below)
+	run([ ssh_wrap(slave, opts.identity_file, 'rm -f $HOME/spark && ln -s $HOME/packages/spark-1.3.0-bin-cdh4 $HOME/spark', verbose = opts.verbose) for slave in slave_nodes ], parallelize = True)
 
 
 def configure_ganglia(cluster_name, opts, master_node, slave_nodes):

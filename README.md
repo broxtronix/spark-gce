@@ -1,7 +1,7 @@
 spark-gce
 =========
 
-This script allows you to create a [Spark](http://spark.apache.org/) cluster on
+This script helps you create a [Spark](http://spark.apache.org/) cluster on
 Google Compute Engine. It serves a similar function to the spark-ec2
 script that comes bundled with Spark, but the Spark cluster environment it
 creates is different in several key respects:
@@ -12,11 +12,12 @@ creates is different in several key respects:
  - At the moment Hadoop, Shark, and Tachyon are not pre-installed (pull requests welcome)
 
 This is a fork of the Spark GCE script originally written by [Sigmoid
-Analytics](https://github.com/sigmoidanalytics/spark_gce).  This fork of spark-gce
+Analytics](https://github.com/sigmoidanalytics/spark_gce).  This fork
 has been significantly re-architected in order to enable the following 
 performance enhancements and new additions:
 
 - Command syntax and option parsing now more closely follows the conventions used in the spark-ec2 script.
+- Availability of the familiar 'copy-dir' and 'parallel-ssh' (pssh from spark-ec2) commands
 - Script commands can now run parallel, so multiple operations can be performed simultaneously.  This greatly reduces the time it takes to launch, start, stop, and destroy clusters, especially when there are many slave nodes.
 - Addition of a 'start' and 'stop' command, which allow a cluster to be temporarily suspened while preserving the contents of its root disks (data on scratch disks does not persist).
 - Addition of a 'login' and 'mosh' command to log into a running cluster with ssh or [mosh](https://mosh.mit.edu/), respectively
@@ -73,6 +74,26 @@ Finally, you can terminate your cluster entirely, which permenantly shuts down y
 ```
 spark-gce destroy <cluster_name>
 ```
+
+Configuring Spark
+-----------------
+
+The spark_gce script sets up a Spark environment with reasonable defaults for
+most basic settings. However, you may need to customize your Spark settings for
+your application. To do this, edit the `$HOME/spark/conf/spark-env.sh` and
+`$HOME/spark/conf/spark-defaults.conf` files on your master node. Information
+about various settings can be found in the
+[Spark documentation](https://spark.apache.org/docs/1.3.0/configuration.html).
+
+Once you have changed your settings, you must re-deploy the configuration files
+to the slave nodes and restart spark.  On your master node, run:
+```
+copy-dir $HOME/spark/conf
+$HOME/spark/sbin/stop-all.sh
+$HOME/spark/sbin/start-all.sh
+```
+Note that your Spark configuration will persist even if you 'stop' or 'start'
+your cluster. Your settings will remain is place until until your cluster is destroyed.
 
 Want to help?
 -------------
