@@ -570,7 +570,7 @@ def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
 			 'sudo apt-get install -q -y screen less git mosh bzip2 htop g++ openjdk-7-jdk',
 			 'wget http://09c8d0b2229f813c1b93-c95ac804525aac4b6dba79b00b39d1d3.r79.cf1.rackcdn.com/Anaconda-2.1.0-Linux-x86_64.sh',
 			 'bash Anaconda-2.1.0-Linux-x86_64.sh -b && rm Anaconda-2.1.0-Linux-x86_64.sh',
-			 'echo \'export PATH=\$PATH:\$HOME/spark/bin:\$HOME/anaconda/bin\' >> $HOME/.bashrc']
+			 'echo \'export PATH=\$HOME/anaconda/bin:\$PATH:\$HOME/spark/bin\' >> $HOME/.bashrc']
 
 	master_cmds = [ ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose) ]
 	slave_cmds = [ ssh_wrap(slave, opts.identity_file, cmds, verbose = opts.verbose) for slave in slave_nodes ]
@@ -629,7 +629,8 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
 			'cd $HOME/spark/conf && echo \'export PYSPARK_PYTHON=\$HOME/anaconda/bin/ipython\' >> spark-env.sh',
 			'cd $HOME/spark/conf && echo \'export PYSPARK_DRIVER_PYTHON=\$HOME/anaconda/bin/python\' >> spark-env.sh',
 			'cd $HOME/spark/conf && echo \'export SPARK_DRIVER_MEMORY=20g\' >> spark-env.sh',
-			'cd $HOME/spark/conf && chmod +x spark-env.sh']
+			'cd $HOME/spark/conf && chmod +x spark-env.sh',
+			'echo \'export SPARK_HOME=\$HOME:spark\' >> $HOME/.bashrc']
 	run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
 	run(ssh_wrap(master_node, opts.identity_file, 'sed -i "s/PUT_INTERNAL_MASTER_IP_HERE/$(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1)/g" $HOME/spark/conf/spark-env.sh', verbose = opts.verbose) )
 
@@ -830,7 +831,12 @@ def parse_args():
 	parser.add_option("--verbose",
 					  action="store_true", dest="verbose", default=False,
 					  help="Show verbose output.")
-	
+	parser.add_option("--ssh-port-forwarding", default=None,
+					  help="Set up ssh port forwarding when you login to the cluster.  " +
+					  "This provides a convenient alternative to connecting to iPython " +
+					  "notebook over an open port using SSL.  You must supply an argument " +
+					  "of the form \"local_port:remote_port\".")
+
 	(opts, args) = parser.parse_args()
 	if len(args) != 2:
 		parser.print_help()
@@ -860,9 +866,33 @@ def ssh_cluster(cluster_name, opts):
 		print 'Command failed.  Could not find a cluster named "' + cluster_name + '".'
 		sys.exit(1)
 
-	cmd = 'ssh -i ' + opts.identity_file + ' -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no ' + str(master_node['host_ip'])
-	subprocess.check_call(shlex.split(cmd))
+	# SSH tunnels are a convenient, zero-configuration
+	# alternative to opening a port using the EC2 security
+	# group settings and using iPython notebook over SSL.
+	#
+	# If the user has requested ssh port forwarding, we set
+	# that up here.
+	if opts.ssh_port_forwarding is not None:
+		ssh_ports = opts.ssh_port_forwarding.split(":")
+		if len(ssh_ports) != 2:
+			print "\nERROR: Could not parse arguments to \'--ssh-port-forwarding\'."
+			print "       Be sure you use the syntax \'local_port:remote_port\'"
+			sys.exit(1)
+		print ("\nSSH port forwarding requested.  Remote port " + ssh_ports[1] +
+			   " will be accessible at http://localhost:" + ssh_ports[0] + '\n')
+		try:
+			cmd = ('ssh -i ' + opts.identity_file + ' -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no -L ' +
+				   ssh_ports[0] + ':127.0.0.1:' + ssh_ports[1] + ' -o ExitOnForwardFailure=yes ' + str(master_node['host_ip']))
+			subprocess.check_call(shlex.split(cmd))
+		except subprocess.CalledProcessError:
+			print "\nERROR: Could not establish ssh connection with port forwarding."
+			print "       Check your Internet connection and make sure that the"
+			print "       ports you have requested are not already in use."
+			sys.exit(1)
 
+	else:
+		cmd = 'ssh -i ' + opts.identity_file + ' -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no ' + str(master_node['host_ip'])
+		subprocess.check_call(shlex.split(cmd))
 	
 def real_main():
 
@@ -888,7 +918,7 @@ def real_main():
 	elif action == "destroy":
 		destroy_cluster(cluster_name, opts)
 
-	elif action == "ssh":
+	elif action == "login":
 		ssh_cluster(cluster_name, opts)
 
 	elif action == "mosh":
