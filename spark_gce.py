@@ -194,7 +194,7 @@ def launch_cluster(cluster_name, opts):
 		zone_str = ''
 
 	# Set up the network
-	#setup_network(cluster_name, opts)
+	setup_network(cluster_name, opts)
  
 	# Start master nodes & slave nodes
 	cmds = []
@@ -209,6 +209,9 @@ def launch_cluster(cluster_name, opts):
 	# all hosts have been assigned an IP address.
 	print '[ Waiting for cluster to enter into SSH-ready state ]'
 	(master_node, slave_nodes) = wait_for_cluster(cluster_name, opts)
+
+	#install_hadoop(cluster_name, opts, master_node, slave_nodes)
+	#sys.exit(0)
 	
 	# Generate SSH keys and deploy to workers and slaves
 	deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes)
