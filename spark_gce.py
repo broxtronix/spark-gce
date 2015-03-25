@@ -194,7 +194,7 @@ def launch_cluster(cluster_name, opts):
 		zone_str = ''
 
 	# Set up the network
-	#setup_network(cluster_name, opts)
+	setup_network(cluster_name, opts)
  
 	# Start master nodes & slave nodes
 	cmds = []
@@ -203,7 +203,7 @@ def launch_cluster(cluster_name, opts):
 		cmds.append( command_prefix + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.read_only" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd"' + zone_str )
 
 	print '[ Launching nodes ]'
-	#run(cmds, parallelize = True, verbose = opts.verbose)
+	run(cmds, parallelize = True, verbose = opts.verbose)
 
 	# Wait some time for machines to bootup. We consider the cluster ready when
 	# all hosts have been assigned an IP address.
@@ -211,21 +211,21 @@ def launch_cluster(cluster_name, opts):
 	(master_node, slave_nodes) = wait_for_cluster(cluster_name, opts)
 	
 	# Generate SSH keys and deploy to workers and slaves
-	#deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes)
+	deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes)
  
 	# Attach a new empty drive and format it
-	#attach_persistent_scratch_disks(cluster_name, opts, master_node, slave_nodes)
+	attach_persistent_scratch_disks(cluster_name, opts, master_node, slave_nodes)
 	# attach_ssd(cluster_name, opts, master_node, slave_nodes)
 
 	# Initialize the cluster, installing important dependencies
-	#initialize_cluster(cluster_name, opts, master_node, slave_nodes)
+	initialize_cluster(cluster_name, opts, master_node, slave_nodes)
 
 	# Install, configure, and start ganglia
 	configure_ganglia(cluster_name, opts, master_node, slave_nodes)
 
 	# Install, configure and start Spark
-	#install_spark(cluster_name, opts, master_node, slave_nodes)
-	#configure_and_start_spark(cluster_name, opts, master_node, slave_nodes)
+	install_spark(cluster_name, opts, master_node, slave_nodes)
+	configure_and_start_spark(cluster_name, opts, master_node, slave_nodes)
 
 	print "\n\n======================================================="
 	print "              Cluster \"%s\" is running" % (cluster_name)
@@ -303,39 +303,6 @@ def stop_cluster(cluster_name, opts):
 		print "\nExiting without stopping cluster %s." % (cluster_name)
 		sys.exit(0)
 
-
-def wait_for_cluster(cluster_name, opts, retry_time = 15, num_retries = 12):
-	
-	# Query for instance info a second time.  Once instances start, we should get IP addresses.
-	(master_node, slave_nodes) = get_cluster_info(cluster_name, opts)
-
-	retries = 0
-	cluster_is_ready = False
-	while True:
-		cluster_is_ready = True
-		for node in [master_node] + slave_nodes:
-			# Check if the node has a public IP assigned yet. If not, the node
-			# is still launching.
-			if node['host_ip'] is None:
-				cluster_is_ready = False
-			else:
-				# If the cluster node has an IP, then let's try to connect over
-				# ssh.  If that fails, the node is still not ready.
-				ssh_command = ssh_wrap(node, opts.identity_file, 'echo')
-				try:
-					output = subprocess.check_output(ssh_command, shell=True)
-				except subprocess.CalledProcessError:
-					cluster_is_ready = False
-	
-		if cluster_is_ready:
-			return (master_node, slave_nodes)
-		elif retries < num_retries:
-			print "cluster was not ready.  retrying"
-			retries += 1
-		else:
-			print "Error: cluster took too long to start."
-			sys.exit(1)
-
 			
 def start_cluster(cluster_name, opts):
 	"""
@@ -394,7 +361,39 @@ def check_gcloud(cluster_name, opts):
 	except OSError:
 		print "%s executable not found. \n# Make sure gcloud is installed and authenticated\nPlease follow https://cloud.google.com/compute/docs/gcloud-compute/" % myexec
 		sys.exit(1)
-		
+
+def wait_for_cluster(cluster_name, opts, retry_time = 15, num_retries = 12):
+	
+	# Query for instance info a second time.  Once instances start, we should get IP addresses.
+	(master_node, slave_nodes) = get_cluster_info(cluster_name, opts)
+
+	retries = 0
+	cluster_is_ready = False
+	while True:
+		cluster_is_ready = True
+		for node in [master_node] + slave_nodes:
+			# Check if the node has a public IP assigned yet. If not, the node
+			# is still launching.
+			if node['host_ip'] is None:
+				cluster_is_ready = False
+			else:
+				# If the cluster node has an IP, then let's try to connect over
+				# ssh.  If that fails, the node is still not ready.
+				ssh_command = ssh_wrap(node, opts.identity_file, 'echo')
+				try:
+					output = subprocess.check_output(ssh_command, shell=True)
+				except subprocess.CalledProcessError:
+					cluster_is_ready = False
+	
+		if cluster_is_ready:
+			return (master_node, slave_nodes)
+		elif retries < num_retries:
+			print "cluster was not ready.  retrying"
+			retries += 1
+		else:
+			print "Error: cluster took too long to start."
+			sys.exit(1)
+
 def get_cluster_info(cluster_name, opts):
 	command_prefix = get_command_prefix(cluster_name, opts)
 		
