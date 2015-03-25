@@ -1,11 +1,12 @@
-Spark GCE
+spark-gce
 =========
 
-Spark GCE allows you to create a [Spark](http://spark.apache.org/) cluster on
-Google Compute Engine. This script serves a similar function to the spark-ec2
+This script allows you to create a [Spark](http://spark.apache.org/) cluster on
+Google Compute Engine. It serves a similar function to the spark-ec2
 script that comes bundled with Spark, but the Spark cluster environment it
 creates is different in several key respects:
 
+ - Instances run on Google Compute Engine rather than Amazon's EC2
  - Instances run Ubuntu 14.04 rather than Amazon Linux (CentOS)
  - The default pyspark environment is [Anaconda 2.1.0](http://continuum.io/) with python 2.7
  - At the moment Hadoop, Shark, and Tachyon are not pre-installed (pull requests welcome)
