@@ -1,27 +1,28 @@
 Spark GCE
 =========
 
-Spark GCE allows you to create and manage [Spark](http://spark.apache.org/) on
+Spark GCE allows you to create a [Spark](http://spark.apache.org/) cluster on
 Google Compute Engine. This script serves a similar function to the spark-ec2
 script that comes bundled with Spark, but the Spark cluster environment it
 creates is different in several key respects:
 
- - Cluster instances run Ubuntu 14.04 rather than Amazon Linux (CentOS)
- - The default python (and pyspark) environment is [Anaconda 2.1.0](http://continuum.io/) with python 2.7
- - At the moment, Hadoop, Shark, and Tachyon are not pre-installed (pull requests welcome)
+ - Instances run Ubuntu 14.04 rather than Amazon Linux (CentOS)
+ - The default pyspark environment is [Anaconda 2.1.0](http://continuum.io/) with python 2.7
+ - At the moment Hadoop, Shark, and Tachyon are not pre-installed (pull requests welcome)
 
 This is a fork of the Spark GCE script originally written by [Sigmoid
-Analytics](https://github.com/sigmoidanalytics/spark_gce), with many performance
-enhancements and new additions.  The changes include:
+Analytics](https://github.com/sigmoidanalytics/spark_gce).  This fork of spark-gce
+has been significantly re-architected in order to enable the following 
+performance enhancements and new additions:
 
-- Update to Spark 1.3, and pyspark uses Anaconda 2.1.0 as its default Python interpreter
-- Command syntax and option parsing now more closely follows the conventions used in the spark-ec2 script
+- Command syntax and option parsing now more closely follows the conventions used in the spark-ec2 script.
 - Script commands can now run parallel, so multiple operations can be performed simultaneously.  This greatly reduces the time it takes to launch, start, stop, and destroy clusters, especially when there are many slave nodes.
-- Addition of a 'start' and 'stop' command, which allow a cluster to be temporarily suspened while preserving the contents of its root disks (data on scratch disks does not persist)
-- Addition of a 'login' and 'mosh' command to log into a running cluster with ssh or mosh, respectively
-- A ssh port forwarding mode that can be optionally used with 'spark-gce login' by adding the flag: --ssh-port-forwarding <local_port>:<remote_port> to
-- Ganglia cluster monitoring at http://<master_node_ip>:5080/ganglia
+- Addition of a 'start' and 'stop' command, which allow a cluster to be temporarily suspened while preserving the contents of its root disks (data on scratch disks does not persist).
+- Addition of a 'login' and 'mosh' command to log into a running cluster with ssh or [mosh](https://mosh.mit.edu/), respectively
+- Support for ssh port forwarding (useful for connecting to ipython notebook) via the `spark-gce login` flag: --ssh-port-forwarding  <local_port>:<remote_port>
+- Ganglia cluster monitoring
 - Faster (SSD) scratch drives
+
 
 Getting Started
 ---------------
@@ -34,9 +35,8 @@ with
 gcloud auth login
 ```
 
-I also recommend configuring a default project, region, and zone for all
-`gcloud` commands, which saves you from having to include these additional
-command line flages when calling `spark-gce`.  
+I also recommend configuring a default project, region, and zone that applies for all
+`gcloud` commands. This saves you from having to type additional command line flags when calling `spark-gce`.  
 
 ```
 gcloud config set project <project-id>
@@ -44,7 +44,7 @@ gcloud config set compute/region <region>
 gcloud config set compute/zone <zone>
 ```
 
-Having done this, you should be able to start a new cluster with this short command
+Having done this, you should be able to start a new cluster with this succinct command
 
 ```
 spark-gce start <cluster_name> -s <num_slaves>
@@ -76,9 +76,7 @@ spark-gce destroy <cluster_name>
 Want to help?
 -------------
 
-This script is very much a work in progress. It supports my current use case, but will
-hopefully be made more flexible down the road. Pull requests are welcome. Here
-are some contributions that would be particularly helpful:
+This script is very much a work in progress. It supports my current use case, but I hope it will be made more flexible down the road.  You are welcome to take this script and do whatever you please.  Pull requests are also welcome. Here are some contributions that would be particularly helpful:
 
 - Better testing and support for different GCE instance types, regions, and zones
 - Allow the user to specify which Spark version to install
