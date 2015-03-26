@@ -194,7 +194,7 @@ def launch_cluster(cluster_name, opts):
 		zone_str = ''
 
 	# Set up the network
-	setup_network(cluster_name, opts)
+	#setup_network(cluster_name, opts)
  
 	# Start master nodes & slave nodes
 	cmds = []
@@ -203,15 +203,15 @@ def launch_cluster(cluster_name, opts):
 		cmds.append( command_prefix + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.read_only" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd"' + zone_str )
 
 	print '[ Launching nodes ]'
-	run(cmds, parallelize = True, verbose = opts.verbose)
+	#run(cmds, parallelize = True, verbose = opts.verbose)
 
 	# Wait some time for machines to bootup. We consider the cluster ready when
 	# all hosts have been assigned an IP address.
 	print '[ Waiting for cluster to enter into SSH-ready state ]'
 	(master_node, slave_nodes) = wait_for_cluster(cluster_name, opts)
 	
-	#install_hadoop(cluster_name, opts, master_node, slave_nodes)
-	#sys.exit(0)
+	install_hadoop(cluster_name, opts, master_node, slave_nodes)
+	sys.exit(0)
 	
 	# Generate SSH keys and deploy to workers and slaves
 	deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes)
@@ -690,17 +690,36 @@ def install_hadoop(cluster_name, opts, master_node, slave_nodes):
 
 	print '[ Installing hadoop ]'
 
-	cmds = ['wget http://s3.amazonaws.com/spark-related-packages/hadoop-2.0.0-cdh4.2.0.tar.gz',
-			'tar xvzf hadoop-*.tar.gz > /tmp/spark-ec2_hadoop.log',
-			'rm hadoop-*.tar.gz',
-			'rm -rf ephemeral-hdfs && mv hadoop-2.0.0-cdh4.2.0 ephemeral-hdfs',
-			#'rm -rf $HOME/ephemeral-hdfs/etc/hadoop/',   # Use a single conf directory
-			#'ln -s $HOME/ephemeral-hdfs/conf $HOME/ephemeral-hdfs/etc/hadoop',
-			'cd ephemeral-hdfs && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/setup.sh && chmod 755 setup.sh',
-			'cd ephemeral-hdfs && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/setup-slave.sh && chmod 755 setup-slave.sh',
-			#'$HOME/spark/bin/copy-dir $HOME/ephemeral-hdfs'
-			#'cp $HOME/hadoop-native/* ephemeral-hdfs/lib/native/', ????
-			#
+	cmds = [
+		# Build native hadoop libaries
+		#'mkdir -p $HOME/hadoop-native',
+		#'cd /tmp && wget "http://archive.apache.org/dist/hadoop/common/hadoop-2.4.1/hadoop-2.4.1-src.tar.gz"',
+		#'cd /tmp && tar xvzf hadoop-2.4.1-src.tar.gz && rm hadoop-2.4.1-src.tar.gz',
+		#'sudo apt-get install -q -y protobuf-compiler cmake libssl-dev maven2',
+		#'cd /tmp/hadoop-2.4.1-src && mvn package -Pdist,native -DskipTests -Dtar',
+		#'sudo mv /tmp/hadoop-dist/target/hadoop-2.4.1/lib/native/* /root/hadoop-native',
+
+		# Install Hadoop 2.0
+		'wget http://s3.amazonaws.com/spark-related-packages/hadoop-2.0.0-cdh4.2.0.tar.gz',
+		'tar xvzf hadoop-*.tar.gz > /tmp/spark-ec2_hadoop.log',
+		'rm hadoop-*.tar.gz',
+		'rm -rf ephemeral-hdfs && mv hadoop-2.0.0-cdh4.2.0 ephemeral-hdfs',
+		'rm -rf $HOME/ephemeral-hdfs/etc/hadoop/',   # Use a single conf directory
+		'ln -s $HOME/ephemeral-hdfs/conf $HOME/ephemeral-hdfs/etc/hadoop',
+		'cd $HOME/ephemeral-hdfs/conf && rm -f core-site.xml && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/conf/core-site.xml',
+		'cd $HOME/ephemeral-hdfs/conf && rm -f hadoop-env.sh && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/conf/hadoop-env.sh && chmod 755 hadoop-env.sh',
+		'cd $HOME/ephemeral-hdfs/conf && rm -f hadoop-metrics2.properties && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/conf/hadoop-metrics2.properties',
+		'cd $HOME/ephemeral-hdfs/conf && rm -f hdfs-site.xml && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/conf/hdfs-site.xml',
+		'cd $HOME/ephemeral-hdfs/conf && rm -f mapred-site.xml && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/conf/mapred-site.xml',
+		'cd $HOME/ephemeral-hdfs/conf && rm -f masters && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/conf/masters',
+		'cd $HOME/ephemeral-hdfs/conf && rm -f slaves && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/conf/slaves',
+		'cd ephemeral-hdfs && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/setup.sh && chmod 755 setup.sh',
+		'cd ephemeral-hdfs && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/setup-slave.sh && chmod 755 setup-slave.sh',
+
+		
+		#'$HOME/spark/bin/copy-dir $HOME/ephemeral-hdfs'
+		#'cp $HOME/hadoop-native/* ephemeral-hdfs/lib/native/', ????
+		#
 	]
 	run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
 	
