@@ -6,18 +6,9 @@ EPHEMERAL_HDFS=$HOME/ephemeral-hdfs
 export PUBLIC_DNS=`wget -q -O - http://icanhazip.com/`
 
 HDFS_URL="hdfs://$PUBLIC_DNS:9000"
-echo "export HDFS_URL=$HDFS_URL" >> ~/.bash_profile
+echo "export HDFS_URL=$HDFS_URL" >> ~/.bashrc
 
-####
-source $EPHEMERAL_HDFS/setup-slave.sh
-
-#for node in $SLAVES $OTHER_MASTERS; do
-#  echo $node
-#  ssh -t -t $SSH_OPTS root@$node "/root/spark-ec2/ephemeral-hdfs/setup-slave.sh" & sleep 0.3
-#done
-#wait
-
-#/root/spark-ec2/copy-dir $EPHEMERAL_HDFS/conf
+$HOME/spark/bin/copy-dir $EPHEMERAL_HDFS/conf
 
 NAMENODE_DIR=/mnt/ephemeral-hdfs/dfs/name
 

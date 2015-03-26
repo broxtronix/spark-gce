@@ -621,7 +621,8 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
 	cmds = ['cd $HOME/spark/conf && rm -f wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/spark/spark-env.sh',
 			'cd $HOME/spark/conf && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/spark/spark-defaults.conf',
 			'cd $HOME/spark/conf && chmod +x spark-env.sh',
-			'echo \'export SPARK_HOME=\$HOME:spark\' >> $HOME/.bashrc']
+			'echo \'export SPARK_HOME=\$HOME:spark\' >> $HOME/.bashrc',
+			'echo \'export JAVA_HOME=/usr/lib/jvm/java-1.7.0-openjdk-amd64\' >> $HOME/.bashrc']
 	run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
 	run(ssh_wrap(master_node, opts.identity_file, 'sed -i "s/{{SPARK_GCE_WILL_PLACE_MASTER_IP_HERE}}/$(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1)/g" $HOME/spark/conf/spark-env.sh', verbose = opts.verbose) )
 
@@ -693,11 +694,11 @@ def install_hadoop(cluster_name, opts, master_node, slave_nodes):
 			'tar xvzf hadoop-*.tar.gz > /tmp/spark-ec2_hadoop.log',
 			'rm hadoop-*.tar.gz',
 			'rm -rf ephemeral-hdfs && mv hadoop-2.0.0-cdh4.2.0 ephemeral-hdfs',
-			'rm -rf $HOME/ephemeral-hdfs/etc/hadoop/',   # Use a single conf directory
-			'ln -s $HOME/ephemeral-hdfs/conf $HOME/ephemeral-hdfs/etc/hadoop',
-			'cd ephemeral-hdfs && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/setup.sh'
-			'cd ephemeral-hdfs && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/setup-slaves.sh'
-			'copy-dir $HOME/ephemeral-hdfs'
+			#'rm -rf $HOME/ephemeral-hdfs/etc/hadoop/',   # Use a single conf directory
+			#'ln -s $HOME/ephemeral-hdfs/conf $HOME/ephemeral-hdfs/etc/hadoop',
+			'cd ephemeral-hdfs && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/setup.sh && chmod 755 setup.sh',
+			'cd ephemeral-hdfs && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/setup-slave.sh && chmod 755 setup-slave.sh',
+			#'$HOME/spark/bin/copy-dir $HOME/ephemeral-hdfs'
 			#'cp $HOME/hadoop-native/* ephemeral-hdfs/lib/native/', ????
 			#
 	]
