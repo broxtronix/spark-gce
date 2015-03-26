@@ -194,7 +194,7 @@ def launch_cluster(cluster_name, opts):
 		zone_str = ''
 
 	# Set up the network
-	# setup_network(cluster_name, opts)
+	setup_network(cluster_name, opts)
  
 	# Start master nodes & slave nodes
 	cmds = []
@@ -203,15 +203,15 @@ def launch_cluster(cluster_name, opts):
 		cmds.append( command_prefix + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.read_only" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd"' + zone_str )
 
 	print '[ Launching nodes ]'
-	# run(cmds, parallelize = True, verbose = opts.verbose)
+	run(cmds, parallelize = True, verbose = opts.verbose)
 
 	# Wait some time for machines to bootup. We consider the cluster ready when
 	# all hosts have been assigned an IP address.
 	print '[ Waiting for cluster to enter into SSH-ready state ]'
 	(master_node, slave_nodes) = wait_for_cluster(cluster_name, opts)
 
-	install_hadoop(cluster_name, opts, master_node, slave_nodes)
-	sys.exit(0)
+	#install_hadoop(cluster_name, opts, master_node, slave_nodes)
+	#sys.exit(0)
 	
 	# Generate SSH keys and deploy to workers and slaves
 	deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes)
