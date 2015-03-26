@@ -618,7 +618,7 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
 	run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
 
 	# Set up the spark-env.conf and spark-defaults.conf files
-	cmds = ['cd $HOME/spark/conf && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/spark/spark-env.sh',
+	cmds = ['cd $HOME/spark/conf && rm -f wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/spark/spark-env.sh',
 			'cd $HOME/spark/conf && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/spark/spark-defaults.conf',
 			'cd $HOME/spark/conf && chmod +x spark-env.sh',
 			'echo \'export SPARK_HOME=\$HOME:spark\' >> $HOME/.bashrc']
@@ -685,73 +685,24 @@ def configure_ganglia(cluster_name, opts, master_node, slave_nodes):
 	run([ssh_wrap(node, opts.identity_file, cmds, verbose = opts.verbose) for node in slave_nodes])
 
 
-def install_hadoop(master_nodes,slave_nodes):
+def install_hadoop(cluster_name, opts, master_node, slave_nodes):
 
 	print '[ Installing hadoop ]'
 
 	cmds = ['wget http://s3.amazonaws.com/spark-related-packages/hadoop-2.0.0-cdh4.2.0.tar.gz',
 			'tar xvzf hadoop-*.tar.gz > /tmp/spark-ec2_hadoop.log',
 			'rm hadoop-*.tar.gz',
-			'mv hadoop-2.0.0-cdh4.2.0/ ephemeral-hdfs/',
+			'rm -rf ephemeral-hdfs && mv hadoop-2.0.0-cdh4.2.0 ephemeral-hdfs',
 			'rm -rf $HOME/ephemeral-hdfs/etc/hadoop/',   # Use a single conf directory
 			'ln -s $HOME/ephemeral-hdfs/conf $HOME/ephemeral-hdfs/etc/hadoop',
-			'cp $HOME/hadoop-native/* ephemeral-hdfs/lib/native/',
+			'cd ephemeral-hdfs && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/setup.sh'
+			'cd ephemeral-hdfs && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/setup-slaves.sh'
 			'copy-dir $HOME/ephemeral-hdfs'
+			#'cp $HOME/hadoop-native/* ephemeral-hdfs/lib/native/', ????
+			#
 	]
+	run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
 	
-	
-	ssh_command(master,"")
-	ssh_command(master,"cd sigmoid;tar zxf hadoop-2.0.0-cdh4.2.0.tar.gz")
-	ssh_command(master,"cd sigmoid;rm hadoop-2.0.0-cdh4.2.0.tar.gz")
-
-	print '[ Configuring Hadoop ]'
-	
-	#Configure .bashrc
-	ssh_command(master,"echo '#HADOOP_CONFS' >> .bashrc")
-	ssh_command(master,"echo 'export JAVA_HOME=/usr/lib/jvm/java-1.7.0-openjdk-1.7.0.75.x86_64' >> .bashrc")
-	ssh_command(master,"echo 'export HADOOP_INSTALL=/home/`whoami`/sigmoid/hadoop-2.0.0-cdh4.2.0' >> .bashrc")
-	ssh_command(master,"echo 'export PATH=$PATH:\$HADOOP_INSTALL/bin' >> .bashrc")
-	ssh_command(master,"echo 'export PATH=$PATH:\$HADOOP_INSTALL/sbin' >> .bashrc")
-	ssh_command(master,"echo 'export HADOOP_MAPRED_HOME=\$HADOOP_INSTALL' >> .bashrc")
-	ssh_command(master,"echo 'export HADOOP_COMMON_HOME=\$HADOOP_INSTALL' >> .bashrc")
-	ssh_command(master,"echo 'export HADOOP_HDFS_HOME=\$HADOOP_INSTALL' >> .bashrc")
-	ssh_command(master,"echo 'export YARN_HOME=\$HADOOP_INSTALL' >> .bashrc")
-
-	#Remove *-site.xmls
-	ssh_command(master,"cd sigmoid/hadoop-2.0.0-cdh4.2.0;rm etc/hadoop/core-site.xml")
-	ssh_command(master,"cd sigmoid/hadoop-2.0.0-cdh4.2.0;rm etc/hadoop/yarn-site.xml")
-	ssh_command(master,"cd sigmoid/hadoop-2.0.0-cdh4.2.0;rm etc/hadoop/hdfs-site.xml")
-	#Download Our Confs
-	ssh_command(master,"cd sigmoid/hadoop-2.0.0-cdh4.2.0/etc/hadoop/;wget https://s3.amazonaws.com/sigmoidanalytics-builds/spark/0.9.1/gce/configs/core-site.xml")
-	ssh_command(master,"cd sigmoid/hadoop-2.0.0-cdh4.2.0/etc/hadoop/;wget https://s3.amazonaws.com/sigmoidanalytics-builds/spark/0.9.1/gce/configs/hdfs-site.xml")
-	ssh_command(master,"cd sigmoid/hadoop-2.0.0-cdh4.2.0/etc/hadoop/;wget https://s3.amazonaws.com/sigmoidanalytics-builds/spark/0.9.1/gce/configs/mapred-site.xml")
-	ssh_command(master,"cd sigmoid/hadoop-2.0.0-cdh4.2.0/etc/hadoop/;wget https://s3.amazonaws.com/sigmoidanalytics-builds/spark/0.9.1/gce/configs/yarn-site.xml")
-
-	#Config Core-site
-	ssh_command(master,"sed -i \"s/PUT-MASTER-IP/$(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1)/g\" sigmoid/hadoop-2.0.0-cdh4.2.0/etc/hadoop/core-site.xml")
-	
-	#Create data/node dirs
-	ssh_command(master,"mkdir -p /mnt/hadoop/hdfs/namenode;mkdir -p /mnt/hadoop/hdfs/datanode")
-	#Config slaves
-	ssh_command(master,"cd sigmoid/hadoop-2.0.0-cdh4.2.0/etc/hadoop/;rm slaves")
-	for slave in slave_nodes:
-		ssh_command(master,"cd sigmoid/hadoop-2.0.0-cdh4.2.0/etc/hadoop/;echo " + slave + " >> slaves")
-
-	print '[ Rsyncing with Slaves ]'
-	#Rsync everything
-	for slave in slave_nodes:
-		ssh_command(master,"rsync -za /home/" + username + "/sigmoid " + slave + ":")
-		ssh_command(slave,"mkdir -p /mnt/hadoop/hdfs/namenode;mkdir -p /mnt/hadoop/hdfs/datanode")
-		ssh_command(master,"rsync -za /home/" + username + "/.bashrc " + slave + ":")
-
-	print '[ Formating namenode ]'
-	#Format namenode
-	ssh_command(master,"sigmoid/hadoop-2.0.0-cdh4.2.0/bin/hdfs namenode -format")
-	
-	print '[ Starting DFS ]'
-	#Start dfs
-	ssh_command(master,"sigmoid/hadoop-2.0.0-cdh4.2.0/sbin/start-dfs.sh")
-
 	
 def parse_args():
 	
