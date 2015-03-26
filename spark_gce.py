@@ -391,7 +391,7 @@ def wait_for_cluster(cluster_name, opts, retry_time = 15, num_retries = 12):
 		if cluster_is_ready:
 			return (master_node, slave_nodes)
 		elif retries < num_retries:
-			print "cluster was not ready.  retrying"
+			print "  cluster was not ready.  retrying..."
 			retries += 1
 		else:
 			print "Error: cluster took too long to start."
@@ -571,10 +571,8 @@ def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
 	cmds = [ 'sudo apt-get update -q -y',
 			 'sudo apt-get install -q -y screen less git mosh pssh emacs bzip2 htop g++ openjdk-7-jdk',
 			 'wget http://09c8d0b2229f813c1b93-c95ac804525aac4b6dba79b00b39d1d3.r79.cf1.rackcdn.com/Anaconda-2.1.0-Linux-x86_64.sh',
-			 'bash Anaconda-2.1.0-Linux-x86_64.sh -b && rm Anaconda-2.1.0-Linux-x86_64.sh',
-			 'echo \'export PATH=\$HOME/anaconda/bin:\$PATH:\$HOME/spark/bin\' >> $HOME/.bashrc',
-			 'ipython profile create default',
-			 'echo \'c.NotebookApp.open_browser = False\' >> \$HOME/.ipython/profile_default/ipython_notebook_config.py'
+			 'rm -rf $HOME/anaconda && bash Anaconda-2.1.0-Linux-x86_64.sh -b && rm Anaconda-2.1.0-Linux-x86_64.sh',
+			 'echo \'export PATH=\$HOME/anaconda/bin:\$PATH:\$HOME/spark/bin\' >> $HOME/.bashrc'
 		 ]
 
 	master_cmds = [ ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose) ]
@@ -618,8 +616,8 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
 	run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
 
 	# Set up the spark-env.conf and spark-defaults.conf files
-	cmds = ['cd $HOME/spark/conf && rm -f wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/spark/spark-env.sh',
-			'cd $HOME/spark/conf && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/spark/spark-defaults.conf',
+	cmds = ['cd $HOME/spark/conf && rm -f spark-env.sh && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/spark/spark-env.sh',
+			'cd $HOME/spark/conf && rm -f spark-defaults.conf && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/spark/spark-defaults.conf',
 			'cd $HOME/spark/conf && chmod +x spark-env.sh',
 			'echo \'export SPARK_HOME=\$HOME:spark\' >> $HOME/.bashrc',
 			'echo \'export JAVA_HOME=/usr/lib/jvm/java-1.7.0-openjdk-amd64\' >> $HOME/.bashrc']
@@ -642,7 +640,7 @@ def configure_ganglia(cluster_name, opts, master_node, slave_nodes):
 	cmds = [ 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -q -y ganglia-webfrontend gmetad ganglia-monitor',
 			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/ganglia/ports.conf',
 			 'sudo mv ports.conf /etc/apache2/ && rm -f ports.conf',
-			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/ganglian/000-default.conf',
+			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/ganglia/000-default.conf',
 			 'sudo mv 000-default.conf /etc/apache2/sites-enabled/ && rm -f 000-default.conf',
 			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/ganglia/ganglia.conf',
 			 'sudo mv ganglia.conf /etc/apache2/sites-enabled/ && rm -f ganglia.conf',
