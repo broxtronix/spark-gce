@@ -209,7 +209,7 @@ def launch_cluster(cluster_name, opts):
 	# all hosts have been assigned an IP address.
 	print '[ Waiting for cluster to enter into SSH-ready state ]'
 	(master_node, slave_nodes) = wait_for_cluster(cluster_name, opts)
-
+	
 	#install_hadoop(cluster_name, opts, master_node, slave_nodes)
 	#sys.exit(0)
 	
@@ -584,20 +584,21 @@ def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
 def configure_and_start_spark(cluster_name, opts, master_node, slave_nodes):
 	print '[ Configuring Spark ]'
 
-	# Populate the file containing the list of all current slave nodes
-	run(ssh_wrap(master_node, opts.identity_file, 'rm -f $HOME/spark/conf/slaves', verbose = opts.verbose))
-	for slave in slave_nodes:
-		run(ssh_wrap(master_node, opts.identity_file, 'echo ' + slave['host_ip'] + ' >> $HOME/spark/conf/slaves', verbose = opts.verbose))
-		
 	# Create the Spark scratch directory on the local SSD
 	run(ssh_wrap(master_node, opts.identity_file, 'if [ ! -d /mnt/spark ]; then mkdir /mnt/spark; fi', verbose = opts.verbose))
 	run([ ssh_wrap(slave, opts.identity_file, 'if [ ! -d /mnt/spark ]; then mkdir /mnt/spark; fi', verbose = opts.verbose) for slave in slave_nodes ], parallelize = True)
 
-	# Copy the spark directory from the master node to the slave nodes
-	cmds = []
+	# Populate the file containing the list of all current slave nodes and copy to the master node
+	import tempfile
+	slave_file = tempfile.NamedTemporaryFile(delete = False)
 	for slave in slave_nodes:
-		cmds.append( ssh_wrap(master_node, opts.identity_file, 'rsync -e \"ssh -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no\" -za $HOME/packages/spark-1.3.0-bin-cdh4 ' + slave['host_ip'] + ':packages/', verbose = opts.verbose) )
-	run(cmds, parallelize = True)
+		slave_file.write(slave['host_ip'] + '\n')
+	slave_file.close()
+	cmds = [ "gcloud compute copy-files " + cluster_name + "-master:spark/conf/slaves " + slave_file.name ]
+	os.unlink(slave_file.name)
+
+	# Copy the spark directory from the master node to the slave nodes
+	run(ssh_wrap(master_node, opts.identity_file,'$HOME/spark/bin/copy-dir $HOME/packages/spark-1.3.0-bin-cdh4/conf', opts.verbose))
 
 	print '[ Starting Spark ]'
 	run(ssh_wrap(master_node, opts.identity_file, '$HOME/spark/sbin/start-all.sh', verbose = opts.verbose) )
@@ -629,7 +630,8 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
 			'chmod 755 $HOME/spark/bin/copy-dir']
 	run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
 	
-	# Create a symlink on the slaves (this symlink will be broken at first, but work once we rsync the directory over below)
+	# Copy spark to the slaves and create a symlink to $HOME/spark
+	run(ssh_wrap(master_node, opts.identity_file, '$HOME/spark/bin/copy-dir $HOME/packages/spark-1.3.0-bin-cdh4', verbose = opts.verbose))
 	run([ ssh_wrap(slave, opts.identity_file, 'rm -f $HOME/spark && ln -s $HOME/packages/spark-1.3.0-bin-cdh4 $HOME/spark', verbose = opts.verbose) for slave in slave_nodes ], parallelize = True)
 
 
