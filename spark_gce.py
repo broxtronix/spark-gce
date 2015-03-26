@@ -194,7 +194,7 @@ def launch_cluster(cluster_name, opts):
 		zone_str = ''
 
 	# Set up the network
-	setup_network(cluster_name, opts)
+	# setup_network(cluster_name, opts)
  
 	# Start master nodes & slave nodes
 	cmds = []
@@ -203,15 +203,15 @@ def launch_cluster(cluster_name, opts):
 		cmds.append( command_prefix + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.read_only" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd"' + zone_str )
 
 	print '[ Launching nodes ]'
-	run(cmds, parallelize = True, verbose = opts.verbose)
+	# run(cmds, parallelize = True, verbose = opts.verbose)
 
 	# Wait some time for machines to bootup. We consider the cluster ready when
 	# all hosts have been assigned an IP address.
 	print '[ Waiting for cluster to enter into SSH-ready state ]'
 	(master_node, slave_nodes) = wait_for_cluster(cluster_name, opts)
 
-	#install_hadoop(cluster_name, opts, master_node, slave_nodes)
-	#sys.exit(0)
+	install_hadoop(cluster_name, opts, master_node, slave_nodes)
+	sys.exit(0)
 	
 	# Generate SSH keys and deploy to workers and slaves
 	deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes)
@@ -617,39 +617,13 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
 			 'cd $HOME/packages && tar xvzf scala-2.11.6.tgz && rm -rf scala-2.11.6.tgz']
 	run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
 
-	# Set up the spark-env.conf file
-	cmds = ['cd $HOME/spark/conf && cp spark-env.sh.template spark-env.sh',
-			'cd $HOME/spark/conf && echo \'export SPARK_LOCAL_DIRS="/mnt/spark"\' >> spark-env.sh',
-			'cd $HOME/spark/conf && echo \'export SPARK_WORKER_INSTANCES=1\' >> spark-env.sh',
-			'cd $HOME/spark/conf && echo \'export SPARK_WORKER_CORES=16\' >> spark-env.sh',
-			'cd $HOME/spark/conf && echo \'\' >> spark-env.sh',
-			'cd $HOME/spark/conf && echo \'export HADOOP_HOME="\$HOME/ephemeral-hdfs"\' >> spark-env.sh',
-			'cd $HOME/spark/conf && echo \'export SPARK_MASTER_IP=PUT_INTERNAL_MASTER_IP_HERE\' >> spark-env.sh',
-			'cd $HOME/spark/conf && echo \'export MASTER=spark://PUT_INTERNAL_MASTER_IP_HERE:7077\' >> spark-env.sh',
-			'cd $HOME/spark/conf && echo \'\' >> spark-env.sh',
-			'cd $HOME/spark/conf && echo \'# Bind Spark\'s web UIs to this machine\'s public EC2 hostname:\' >> spark-env.sh',
-			'cd $HOME/spark/conf && echo \'export SPARK_PUBLIC_DNS=\\\\\`wget -q -O - http://icanhazip.com/\\\\\`\' >> spark-env.sh',
-			'cd $HOME/spark/conf && echo \'\' >> spark-env.sh',
-			'cd $HOME/spark/conf && echo \'export SPARK_DRIVER_MEMORY=30g\' >> spark-env.sh',
-			'cd $HOME/spark/conf && echo \'export SPARK_WORKER_MEMORY=90g\' >> spark-env.sh',
-			'cd $HOME/spark/conf && echo \'\' >> spark-env.sh',
-			'cd $HOME/spark/conf && echo \'export PYSPARK_DRIVER_PYTHON=\$HOME/anaconda/bin/ipython\' >> spark-env.sh',
-			'cd $HOME/spark/conf && echo \'export PYSPARK_PYTHON=\$HOME/anaconda/bin/python\' >> spark-env.sh',
+	# Set up the spark-env.conf and spark-defaults.conf files
+	cmds = ['cd $HOME/spark/conf && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/spark/spark-env.sh',
+			'cd $HOME/spark/conf && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/spark/spark-defaults.conf',
 			'cd $HOME/spark/conf && chmod +x spark-env.sh',
 			'echo \'export SPARK_HOME=\$HOME:spark\' >> $HOME/.bashrc']
 	run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
-	run(ssh_wrap(master_node, opts.identity_file, 'sed -i "s/PUT_INTERNAL_MASTER_IP_HERE/$(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1)/g" $HOME/spark/conf/spark-env.sh', verbose = opts.verbose) )
-
-	# Set up the spark-defaults.conf file
-	cmds = ['cd $HOME/spark/conf && cp spark-defaults.conf.template spark-defaults.conf',
-			'echo \'spark.driver.memory 40g\' >> $HOME/spark/conf/spark-defaults.conf',
-			'echo \'spark.executor.memory 90g\' >> $HOME/spark/conf/spark-defaults.conf',
-			'echo \'spark.driver.maxResultSize = 10g\' >> $HOME/spark/conf/spark-defaults.conf',
-			'echo \'spark.akka.frameSize = 2047\' >> $HOME/spark/conf/spark-defaults.conf',
-			'echo \'spark.rdd.compress = true\' >> $HOME/spark/conf/spark-defaults.conf',
-			'echo \'spark.kryoserializer.buffer.max.mb = 2047\' >> $HOME/spark/conf/spark-defaults.conf'
-			]
-	run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
+	run(ssh_wrap(master_node, opts.identity_file, 'sed -i "s/{{SPARK_GCE_WILL_PLACE_MASTER_IP_HERE}}/$(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1)/g" $HOME/spark/conf/spark-env.sh', verbose = opts.verbose) )
 
 	# Install the copy-dir script
 	cmds = ['cd $HOME/spark/bin && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/copy-dir',
@@ -665,11 +639,11 @@ def configure_ganglia(cluster_name, opts, master_node, slave_nodes):
 
 	# Install gmetad and the ganglia web front-end on the master node
 	cmds = [ 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -q -y ganglia-webfrontend gmetad ganglia-monitor',
-			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/etc/apache2/ports.conf',
+			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/ganglia/ports.conf',
 			 'sudo mv ports.conf /etc/apache2/ && rm -f ports.conf',
-			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/etc/apache2/sites-enabled/https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/etc/apache2/sites-enabled/000-default.conf',
+			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/ganglian/000-default.conf',
 			 'sudo mv 000-default.conf /etc/apache2/sites-enabled/ && rm -f 000-default.conf',
-			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/etc/apache2/sites-enabled/https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/etc/apache2/sites-enabled/ganglia.conf',
+			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/ganglia/ganglia.conf',
 			 'sudo mv ganglia.conf /etc/apache2/sites-enabled/ && rm -f ganglia.conf',
 
 			 # Set up ganglia to log data to the scratch drive, since the root drive is small
@@ -680,10 +654,10 @@ def configure_ganglia(cluster_name, opts, master_node, slave_nodes):
 			 'sudo ln -s /mnt/ganglia/rrds /var/lib/ganglia/rrds',
 
 			 # Configure gmond and gmetad on the master node
-			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/etc/ganglia/gmetad.conf',
+			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/ganglia/gmetad.conf',
 			 'sed -i -e  "s/{{master-node}}/' + cluster_name + '-master/g" gmetad.conf',
 			 'sudo mv gmetad.conf /etc/ganglia/ && rm -f gmetad.conf',
-			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/etc/ganglia/gmond.conf',
+			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/ganglia/gmond.conf',
 			 'sed -i -e  "s/{{master-node}}/' + cluster_name + '-master/g" gmond.conf', 
 			 'sudo mv gmond.conf /etc/ganglia/ && rm -f gmond.conf',
 			 'sudo service gmetad restart && sudo service ganglia-monitor restart && sudo service apache2 restart'
@@ -701,22 +675,32 @@ def configure_ganglia(cluster_name, opts, master_node, slave_nodes):
 			 'sudo chown -R nobody:root /mnt/ganglia/rrds',
 			 'sudo rm -rf /var/lib/ganglia/rrds',
 			 'sudo ln -s /mnt/ganglia/rrds /var/lib/ganglia/rrds',
-			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/etc/ganglia/gmond.conf',
+			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/ganglia/gmond.conf',
 			 'sed -i -e  "s/{{master-node}}/' + cluster_name + '-master/g" gmond.conf', 
 			 'sudo mv gmond.conf /etc/ganglia/ && rm -f gmond.conf',
-			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/etc/ganglia/gmetad.conf',
+			 'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/ganglia/gmetad.conf',
 			 'sed -i -e  "s/{{master-node}}/' + cluster_name + '-master/g" gmetad.conf',
 			 'sudo mv gmetad.conf /etc/ganglia/ && rm -f gmetad.conf',
 	         'sudo service ganglia-monitor restart']
 	run([ssh_wrap(node, opts.identity_file, cmds, verbose = opts.verbose) for node in slave_nodes])
 
 
-def setup_hadoop(master_nodes,slave_nodes):
+def install_hadoop(master_nodes,slave_nodes):
 
-	master = master_nodes[0]
-	print '[ Downloading hadoop ]'
+	print '[ Installing hadoop ]'
+
+	cmds = ['wget http://s3.amazonaws.com/spark-related-packages/hadoop-2.0.0-cdh4.2.0.tar.gz',
+			'tar xvzf hadoop-*.tar.gz > /tmp/spark-ec2_hadoop.log',
+			'rm hadoop-*.tar.gz',
+			'mv hadoop-2.0.0-cdh4.2.0/ ephemeral-hdfs/',
+			'rm -rf $HOME/ephemeral-hdfs/etc/hadoop/',   # Use a single conf directory
+			'ln -s $HOME/ephemeral-hdfs/conf $HOME/ephemeral-hdfs/etc/hadoop',
+			'cp $HOME/hadoop-native/* ephemeral-hdfs/lib/native/',
+			'copy-dir $HOME/ephemeral-hdfs'
+	]
 	
-	ssh_command(master,"cd sigmoid;wget https://s3.amazonaws.com/sigmoidanalytics-builds/hadoop/hadoop-2.0.0-cdh4.2.0.tar.gz")
+	
+	ssh_command(master,"")
 	ssh_command(master,"cd sigmoid;tar zxf hadoop-2.0.0-cdh4.2.0.tar.gz")
 	ssh_command(master,"cd sigmoid;rm hadoop-2.0.0-cdh4.2.0.tar.gz")
 
@@ -768,42 +752,7 @@ def setup_hadoop(master_nodes,slave_nodes):
 	#Start dfs
 	ssh_command(master,"sigmoid/hadoop-2.0.0-cdh4.2.0/sbin/start-dfs.sh")
 
-def setup_shark(master_nodes,slave_nodes):
-
-	master = master_nodes[0]
-	print '[ Downloading Shark binaries ]'
 	
-	ssh_command(master,"cd sigmoid;wget https://s3.amazonaws.com/spark-ui/hive-0.11.0-bin.tgz")
-	ssh_command(master,"cd sigmoid;wget https://s3.amazonaws.com/spark-ui/shark-0.9-hadoop-2.0.0-mr1-cdh4.2.0.tar.gz")
-	ssh_command(master,"cd sigmoid;tar zxf hive-0.11.0-bin.tgz")
-	ssh_command(master,"cd sigmoid;tar zxf shark-0.9-hadoop-2.0.0-mr1-cdh4.2.0.tar.gz")
-	ssh_command(master,"rm sigmoid/hive-0.11.0-bin.tgz")
-	ssh_command(master,"rm sigmoid/shark-0.9-hadoop-2.0.0-mr1-cdh4.2.0.tar.gz")
-	
-	print '[ Configuring Shark ]'
-	ssh_command(master,"cd sigmoid/shark/;echo \"export SHARK_MASTER_MEM=1g\" > conf/shark-env.sh")
-	ssh_command(master,"cd sigmoid/shark/;echo \"SPARK_JAVA_OPTS+=\\\" -Dspark.kryoserializer.buffer.mb=10 \\\"\" >> conf/shark-env.sh")
-	ssh_command(master,"cd sigmoid/shark/;echo \"export SPARK_JAVA_OPTS\" >> conf/shark-env.sh")
-	ssh_command(master,"cd sigmoid/shark/;echo \"export HIVE_HOME=/home/`whoami`/sigmoid/hive-0.11.0-bin\" >> conf/shark-env.sh")
-	ssh_command(master,"cd sigmoid/shark/;echo \"export SPARK_JAVA_OPTS\" >> conf/shark-env.sh")
-	ssh_command(master,"cd sigmoid/shark/;echo \"export MASTER=spark://PUT_MASTER_IP_HERE:7077\" >> conf/shark-env.sh")
-	ssh_command(master,"cd sigmoid/shark/;echo \"export SPARK_HOME=/home/`whoami`/sigmoid/spark-0.9.1-bin-cdh4\" >> conf/shark-env.sh")
-	ssh_command(master,"mkdir /mnt/tachyon")
-	ssh_command(master,"cd sigmoid/shark/;echo \"export TACHYON_MASTER=PUT_MASTER_IP_HERE:19998\" >> conf/shark-env.sh")
-	ssh_command(master,"cd sigmoid/shark/;echo \"export TACHYON_WAREHOUSE_PATH=/mnt/tachyon\" >> conf/shark-env.sh")
-	ssh_command(master,"cd sigmoid/shark/;echo \"source /home/`whoami`/sigmoid/spark-0.9.1-bin-cdh4/conf/spark-env.sh\" >> conf/shark-env.sh")	
-	ssh_command(master,"sed -i \"s/PUT_MASTER_IP_HERE/$(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1)/g\" sigmoid/shark/conf/shark-env.sh")
-
-	ssh_command(master,"chmod +x sigmoid/shark/conf/shark-env.sh")
-	
-	print '[ Rsyncing Shark on slaves ]'
-	for slave in slave_nodes:
-		ssh_command(master,"rsync -za /home/" + username + "/sigmoid " + slave + ":")
-
-	print '[ Starting Shark Server ]'
-	ssh_command(master,"cd sigmoid/shark/;./bin/shark --service sharkserver 10000 > log.txt 2>&1 &")
-
-
 def parse_args():
 	
 	import os
