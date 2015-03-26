@@ -104,5 +104,5 @@ This script is very much a work in progress. It supports my current use case, bu
 - Allow the user to specify which Spark version to install
 - Support for local NVMe SSDs (already partially implemented)
 - Inclusion of Hadoop, Shark, Tachyon, and other mainstays of the Apache open source ecosystem.
-- The option to create a larger root disk.  The current root disk size is 10GB, but this can be (expanded)[http://stackoverflow.com/questions/24021214/how-to-get-a-bigger-boot-disk-on-google-compute-engine]
+- The option to create a larger root disk.  The current root disk size is 10GB, but this can be [expanded](http://stackoverflow.com/questions/24021214/how-to-get-a-bigger-boot-disk-on-google-compute-engine)
 - More aesthetically pleasing cluster monitoring using [Graphite](http://graphite.wikidot.com/) and [Grafana](http://grafana.org/)
