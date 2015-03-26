@@ -3,6 +3,9 @@
 # Setup ephemeral-hdfs
 mkdir -p /mnt/ephemeral-hdfs/logs
 mkdir -p /mnt/hadoop-logs
+mkdir -p /var/hadoop
+
+sudo chown -R $USER /var/hadoop
 
 # Create Hadoop and HDFS directories in a given parent directory
 # (for example /mnt, /mnt2, and so on)

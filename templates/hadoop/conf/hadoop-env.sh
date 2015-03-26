@@ -66,4 +66,4 @@ export HADOOP_SECONDARYNAMENODE_USER=hadoop
 export HADOOP_JOBTRACKER_USER=hadoop
 export HADOOP_TASKTRACKER_USER=hadoop
 
-ulimit -n 16000
+sudo ulimit -n 16000
