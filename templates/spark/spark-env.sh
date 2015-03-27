@@ -54,8 +54,8 @@ export SPARK_WORKER_INSTANCES=1
 export SPARK_WORKER_CORES=16
 
 export HADOOP_HOME=/home/broxton/ephemeral-hdfs
-export SPARK_MASTER_IP={{SPARK_GCE_WILL_PLACE_MASTER_IP_HERE}}
-export MASTER=spark://{{SPARK_GCE_WILL_PLACE_MASTER_IP_HERE}}:7077
+export SPARK_MASTER_IP={{active_master}}
+export MASTER=spark://{{active_master}}:7077
 
 export SPARK_PUBLIC_DNS=`wget -q -O - http://icanhazip.com/`
 
