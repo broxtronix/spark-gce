@@ -182,7 +182,8 @@ def check_gcloud(cluster_name, opts):
 		print "%s executable not found. \n# Make sure gcloud is installed and authenticated\nPlease follow https://cloud.google.com/compute/docs/gcloud-compute/" % myexec
 		sys.exit(1)
 
-def wait_for_cluster(cluster_name, opts, retry_time = 15, num_retries = 12):
+def wait_for_cluster(cluster_name, opts, retry_delay = 10, num_retries = 12):
+	import time
 	
 	# Query for instance info a second time.  Once instances start, we should get IP addresses.
 	(master_node, slave_nodes) = get_cluster_info(cluster_name, opts)
@@ -209,6 +210,7 @@ def wait_for_cluster(cluster_name, opts, retry_time = 15, num_retries = 12):
 			return (master_node, slave_nodes)
 		elif retries < num_retries:
 			print "  cluster was not ready.  retrying..."
+			time.sleep(retry_delay)
 			retries += 1
 		else:
 			print "Error: cluster took too long to start."
@@ -316,7 +318,7 @@ def launch_cluster(cluster_name, opts):
 		zone_str = ''
 
 	# Set up the network
-	#setup_network(cluster_name, opts)
+	setup_network(cluster_name, opts)
  
 	# Start master nodes & slave nodes
 	cmds = []
@@ -325,7 +327,7 @@ def launch_cluster(cluster_name, opts):
 		cmds.append( command_prefix + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.full_control" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd" --metadata startup-script-url=https://raw.githubusercontent.com/broxtronix/spark_gce/master/growroot.sh' + zone_str )
 
 	print '[ Launching nodes ]'
-	#run(cmds, parallelize = True, verbose = opts.verbose)
+	run(cmds, parallelize = True, verbose = opts.verbose)
 
 	# Wait some time for machines to bootup. We consider the cluster ready when
 	# all hosts have been assigned an IP address.
@@ -333,20 +335,20 @@ def launch_cluster(cluster_name, opts):
 	(master_node, slave_nodes) = wait_for_cluster(cluster_name, opts)
 		
 	# Generate SSH keys and deploy to workers and slaves
-	#deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes)
+	deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes)
  
 	# Attach a new empty drive and format it
-	#attach_persistent_scratch_disks(cluster_name, opts, master_node, slave_nodes)
+	attach_persistent_scratch_disks(cluster_name, opts, master_node, slave_nodes)
 
 	# Initialize the cluster, installing important dependencies
-	#initialize_cluster(cluster_name, opts, master_node, slave_nodes)
+	initialize_cluster(cluster_name, opts, master_node, slave_nodes)
 
 	# Install, configure, and start ganglia
-	#configure_ganglia(cluster_name, opts, master_node, slave_nodes)
+	configure_ganglia(cluster_name, opts, master_node, slave_nodes)
 
 	# Install and configure Hadoop
 	install_hadoop(cluster_name, opts, master_node, slave_nodes)
-	configure_hadoop(cluster_name, opts, master_node, slave_nodes)
+	configure_and_start_hadoop(cluster_name, opts, master_node, slave_nodes)
 	
 	# Install, configure and start Spark
 	install_spark(cluster_name, opts, master_node, slave_nodes)
@@ -580,7 +582,7 @@ def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
 			 'sudo apt-get install -q -y screen less git mosh pssh emacs bzip2 htop g++ openjdk-7-jdk',
 			 'wget http://09c8d0b2229f813c1b93-c95ac804525aac4b6dba79b00b39d1d3.r79.cf1.rackcdn.com/Anaconda-2.1.0-Linux-x86_64.sh',
 			 'rm -rf $HOME/anaconda && bash Anaconda-2.1.0-Linux-x86_64.sh -b && rm Anaconda-2.1.0-Linux-x86_64.sh',
-			 'echo \'export PATH=\$HOME/anaconda/bin:\$PATH:\$HOME/spark/bin:\$HOME/hadoop/bin\' >> $HOME/.bashrc'
+			 'echo \'export PATH=\$HOME/anaconda/bin:\$PATH:\$HOME/spark/bin:\$HOME/ephemeral-hdfs/bin\' >> $HOME/.bashrc'
 		 ]
 
 	master_cmds = [ ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose) ]
@@ -720,9 +722,9 @@ def install_hadoop(cluster_name, opts, master_node, slave_nodes):
 		# Install the Google Storage adaptor
 		'cd $HOME/ephemeral-hdfs/share/hadoop/hdfs/lib && rm -f gcs-connector-latest-hadoop2.jar && wget https://storage.googleapis.com/hadoop-lib/gcs/gcs-connector-latest-hadoop2.jar',
 	]
-	#run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
+	run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
 
-	print '[ Configuring hadoop ]'
+	# Set up Hadoop configuration files from the templates
 	cmds = [
 		'cd $HOME/ephemeral-hdfs/conf && rm -f core-site.xml && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/conf/core-site.xml',
 		'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/ephemeral-hdfs/conf/core-site.xml',
@@ -767,6 +769,8 @@ def install_hadoop(cluster_name, opts, master_node, slave_nodes):
 
 	
 def configure_and_start_hadoop(cluster_name, opts, master_node, slave_nodes):
+
+	print '[ Configuring hadoop ]'
 
 	# Set up the ephemeral HDFS directories
 	cmds = [ ssh_wrap(node, opts.identity_file,'$HOME/ephemeral-hdfs/setup-slave.sh', opts.verbose) for node in [master_node] + slave_nodes ]
