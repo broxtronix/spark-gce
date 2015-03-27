@@ -316,7 +316,7 @@ def launch_cluster(cluster_name, opts):
 		zone_str = ''
 
 	# Set up the network
-	setup_network(cluster_name, opts)
+	#setup_network(cluster_name, opts)
  
 	# Start master nodes & slave nodes
 	cmds = []
@@ -325,7 +325,7 @@ def launch_cluster(cluster_name, opts):
 		cmds.append( command_prefix + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.full_control" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd" --metadata startup-script-url=https://raw.githubusercontent.com/broxtronix/spark_gce/master/growroot.sh' + zone_str )
 
 	print '[ Launching nodes ]'
-	run(cmds, parallelize = True, verbose = opts.verbose)
+	#run(cmds, parallelize = True, verbose = opts.verbose)
 
 	# Wait some time for machines to bootup. We consider the cluster ready when
 	# all hosts have been assigned an IP address.
@@ -333,17 +333,16 @@ def launch_cluster(cluster_name, opts):
 	(master_node, slave_nodes) = wait_for_cluster(cluster_name, opts)
 		
 	# Generate SSH keys and deploy to workers and slaves
-	deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes)
+	#deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes)
  
 	# Attach a new empty drive and format it
-	attach_persistent_scratch_disks(cluster_name, opts, master_node, slave_nodes)
-	# attach_ssd(cluster_name, opts, master_node, slave_nodes)
+	#attach_persistent_scratch_disks(cluster_name, opts, master_node, slave_nodes)
 
 	# Initialize the cluster, installing important dependencies
-	initialize_cluster(cluster_name, opts, master_node, slave_nodes)
+	#initialize_cluster(cluster_name, opts, master_node, slave_nodes)
 
 	# Install, configure, and start ganglia
-	configure_ganglia(cluster_name, opts, master_node, slave_nodes)
+	#configure_ganglia(cluster_name, opts, master_node, slave_nodes)
 
 	# Install and configure Hadoop
 	install_hadoop(cluster_name, opts, master_node, slave_nodes)
@@ -716,18 +715,17 @@ def install_hadoop(cluster_name, opts, master_node, slave_nodes):
 		'mkdir -p $HOME/ephemeral-hdfs/conf && ln -s $HOME/ephemeral-hdfs/conf $HOME/ephemeral-hdfs/etc/hadoop',
 		'cp $HOME/hadoop-native/* $HOME/ephemeral-hdfs/lib/native/',
 		'cd ephemeral-hdfs && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/setup-slave.sh && chmod 755 setup-slave.sh',
-		'cd ephemeral-hdfs && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/setup-auth.sh && chmod 755 setup-auth.sh'
+		'cd ephemeral-hdfs && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/setup-auth.sh && chmod 755 setup-auth.sh',
 
 		# Install the Google Storage adaptor
 		'cd $HOME/ephemeral-hdfs/share/hadoop/hdfs/lib && rm -f gcs-connector-latest-hadoop2.jar && wget https://storage.googleapis.com/hadoop-lib/gcs/gcs-connector-latest-hadoop2.jar',
 	]
-	run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
+	#run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
 
 	print '[ Configuring hadoop ]'
 	cmds = [
 		'cd $HOME/ephemeral-hdfs/conf && rm -f core-site.xml && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/conf/core-site.xml',
 		'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/ephemeral-hdfs/conf/core-site.xml',
-		'sed -i "s/{{google-project-id}}/`gcloud config list --format json | python -c \'import sys, json; print json.load(sys.stdin)[\"core\"][\"project\"]\'`/g" $HOME/ephemeral-hdfs/conf/core-site.xml',
 		
 		'cd $HOME/ephemeral-hdfs/conf && rm -f hadoop-env.sh && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/conf/hadoop-env.sh && chmod 755 hadoop-env.sh',
 		'sed -i "s/{{java_home}}/\/usr\/lib\/jvm\/java-1.7.0-openjdk-amd64/g" $HOME/ephemeral-hdfs/conf/hadoop-env.sh',
@@ -743,8 +741,6 @@ def install_hadoop(cluster_name, opts, master_node, slave_nodes):
 
 		'cd $HOME/ephemeral-hdfs/conf && rm -f masters && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/conf/masters',
 		'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/ephemeral-hdfs/conf/masters',
-		
-		'cp -f $HOME/spark/conf/slaves $HOME/ephemeral-hdfs/conf/slaves'
 	]
 	run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
 
@@ -761,8 +757,13 @@ def install_hadoop(cluster_name, opts, master_node, slave_nodes):
 	run(cmds, verbose = opts.verbose)
 	os.unlink(slave_file.name)
 
+	# Install the copy-dir script
+	cmds = ['cd $HOME/ephemeral-hdfs/bin && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/copy-dir',
+			'chmod 755 $HOME/ephemeral-hdfs/bin/copy-dir']
+	run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
+
 	# Copy the hadoop directory from the master node to the slave nodes
-	run(ssh_wrap(master_node, opts.identity_file,'$HOME/spark/bin/copy-dir $HOME/ephemeral-hdfs', opts.verbose))
+	run(ssh_wrap(master_node, opts.identity_file,'$HOME/ephemeral-hdfs/bin/copy-dir $HOME/ephemeral-hdfs', opts.verbose))
 
 	
 def configure_and_start_hadoop(cluster_name, opts, master_node, slave_nodes):
@@ -914,7 +915,7 @@ def real_main():
 	elif action == "destroy":
 		destroy_cluster(cluster_name, opts)
 
-	elif action == "login":
+	elif action == "login" or action == "ssh":
 		ssh_cluster(cluster_name, opts)
 
 	elif action == "mosh":
