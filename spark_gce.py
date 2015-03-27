@@ -607,7 +607,7 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
 			'cd $HOME/spark/conf && rm -f spark-defaults.conf && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/spark/spark-defaults.conf',
 			'cd $HOME/spark/conf && rm -f core-site.xml && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/spark/core-site.xml',
 			'cd $HOME/spark/conf && chmod +x spark-env.sh',
-			'echo \'export SPARK_HOME=\$HOME:spark\' >> $HOME/.bashrc',
+			'echo \'export SPARK_HOME=\$HOME/spark\' >> $HOME/.bashrc',
 			'echo \'export JAVA_HOME=/usr/lib/jvm/java-1.7.0-openjdk-amd64\' >> $HOME/.bashrc']
 	run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
 	run(ssh_wrap(master_node, opts.identity_file, 'sed -i "s/{{active_master}}/$(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1)/g" $HOME/spark/conf/spark-env.sh', verbose = opts.verbose) )

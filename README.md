@@ -17,14 +17,15 @@ has been significantly re-architected in order to enable the following
 performance enhancements and new additions:
 
 - Command syntax and option parsing now more closely follows the conventions used in the spark-ec2 script.
-- Availability of the familiar 'copy-dir' and 'parallel-ssh' (pssh from spark-ec2) commands
 - Script commands can now run parallel, so multiple operations can be performed simultaneously.  This greatly reduces the time it takes to launch, start, stop, and destroy clusters, especially when there are many slave nodes.
 - Addition of a 'start' and 'stop' command, which allow a cluster to be temporarily suspened while preserving the contents of its root disks (data on scratch disks does not persist).
 - Addition of a 'login' and 'mosh' command to log into a running cluster with ssh or [mosh](https://mosh.mit.edu/), respectively
-- Support for ssh port forwarding (useful for connecting to ipython notebook) via the `spark-gce login` flag: --ssh-port-forwarding  <local_port>:<remote_port>
+- Root drives on the instances can be larger that 10GB.  (The current default is 50GB)
+- Availability of the familiar 'copy-dir' and 'parallel-ssh' (pssh from spark-ec2) commands
+- Support for ssh port forwarding (useful for connecting to ipython notebook without having to configure SSL) via the `spark-gce login` flag: --ssh-port-forwarding  <local_port>:<remote_port>
 - The Google Storage adaptor for Hadoop is installed, making the "gs://..." namespace available in HDFS
 - Ganglia cluster monitoring
-- Faster (SSD) scratch drives
+- Faster (SSD) scratch drives attached to /mnt with configurable sizes up to 1TB
 
 
 Getting Started
