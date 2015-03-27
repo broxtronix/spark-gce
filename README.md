@@ -9,7 +9,7 @@ creates is different in several key respects:
  - Instances run on Google Compute Engine rather than Amazon's EC2
  - Instances run Ubuntu 14.04 rather than Amazon Linux (CentOS)
  - The default pyspark environment is [Anaconda 2.1.0](http://continuum.io/) with python 2.7
- - At the moment Hadoop, Shark, and Tachyon are not pre-installed (pull requests welcome)
+ - At the moment Shark and Tachyon are not pre-installed (pull requests welcome)
 
 This is a fork of the Spark GCE script originally written by [Sigmoid
 Analytics](https://github.com/sigmoidanalytics/spark_gce).  This fork
@@ -22,6 +22,7 @@ performance enhancements and new additions:
 - Addition of a 'start' and 'stop' command, which allow a cluster to be temporarily suspened while preserving the contents of its root disks (data on scratch disks does not persist).
 - Addition of a 'login' and 'mosh' command to log into a running cluster with ssh or [mosh](https://mosh.mit.edu/), respectively
 - Support for ssh port forwarding (useful for connecting to ipython notebook) via the `spark-gce login` flag: --ssh-port-forwarding  <local_port>:<remote_port>
+- The Google Storage adaptor for Hadoop is installed, making the "gs://..." namespace available in HDFS
 - Ganglia cluster monitoring
 - Faster (SSD) scratch drives
 
@@ -103,6 +104,6 @@ This script is very much a work in progress. It supports my current use case, bu
 - Better testing and support for different GCE instance types, regions, and zones
 - Allow the user to specify which Spark version to install
 - Support for local NVMe SSDs (already partially implemented)
-- Inclusion of Hadoop, Shark, Tachyon, and other mainstays of the Apache open source ecosystem.
+- Inclusion of Shark, Tachyon, and other mainstays of the Apache open source ecosystem.
 - The option to create a larger root disk.  The current root disk size is 10GB, but this can be [expanded](http://stackoverflow.com/questions/24021214/how-to-get-a-bigger-boot-disk-on-google-compute-engine)
 - More aesthetically pleasing cluster monitoring using [Graphite](http://graphite.wikidot.com/) and [Grafana](http://grafana.org/)

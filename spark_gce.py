@@ -696,7 +696,7 @@ def configure_ganglia(cluster_name, opts, master_node, slave_nodes):
 
 def install_hadoop(cluster_name, opts, master_node, slave_nodes):
 
-	print '[ Installing hadoop (this will take a few minutes) ]'
+	print '[ Installing hadoop (this will take several minutes) ]'
 
 	cmds = [
 		# Build native hadoop libaries
