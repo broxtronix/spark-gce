@@ -25,6 +25,7 @@ performance enhancements and new additions:
 - Support for ssh port forwarding (useful for connecting to ipython notebook without having to configure SSL) via the `spark-gce login` flag: --ssh-port-forwarding  <local_port>:<remote_port>
 - The Google Storage adaptor for Hadoop is installed, making the "gs://..." namespace available in HDFS
 - Ganglia cluster monitoring
+- Mount the home directory on your master node locally using [sshfs](http://fuse.sourceforge.net/sshfs.html). (Useful when editing source files and debugging code on remote clusters...)
 - Faster (SSD) scratch drives attached to /mnt with configurable sizes up to 1TB
 
 
