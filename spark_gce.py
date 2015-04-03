@@ -318,7 +318,7 @@ def launch_cluster(cluster_name, opts):
         zone_str = ''
 
     # Set up the network
-#    setup_network(cluster_name, opts)
+    setup_network(cluster_name, opts)
  
     # Start master nodes & slave nodes
     cmds = []
@@ -327,7 +327,7 @@ def launch_cluster(cluster_name, opts):
         cmds.append( command_prefix + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.full_control" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd" --metadata startup-script-url=https://raw.githubusercontent.com/broxtronix/spark_gce/master/growroot.sh' + zone_str )
 
     print '[ Launching nodes ]'
-#    run(cmds, parallelize = True, verbose = opts.verbose)
+    run(cmds, parallelize = True, verbose = opts.verbose)
 
     # Wait some time for machines to bootup. We consider the cluster ready when
     # all hosts have been assigned an IP address.
@@ -335,16 +335,16 @@ def launch_cluster(cluster_name, opts):
     (master_node, slave_nodes) = wait_for_cluster(cluster_name, opts)
         
     # Generate SSH keys and deploy to workers and slaves
-#    deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes)
+    deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes)
  
     # Attach a new empty drive and format it
-#    attach_persistent_scratch_disks(cluster_name, opts, master_node, slave_nodes)
+    attach_persistent_scratch_disks(cluster_name, opts, master_node, slave_nodes)
 
     # Initialize the cluster, installing important dependencies
-#    initialize_cluster(cluster_name, opts, master_node, slave_nodes)
+    initialize_cluster(cluster_name, opts, master_node, slave_nodes)
 
     # Install, configure, and start ganglia
-#    configure_ganglia(cluster_name, opts, master_node, slave_nodes)
+    configure_ganglia(cluster_name, opts, master_node, slave_nodes)
 
     # Install and configure Hadoop
     install_hadoop(cluster_name, opts, master_node, slave_nodes)

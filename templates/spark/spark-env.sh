@@ -51,7 +51,7 @@
 
 export SPARK_LOCAL_DIRS=/mnt/spark
 export SPARK_WORKER_INSTANCES=1
-export SPARK_WORKER_CORES=16
+export SPARK_WORKER_CORES=32
 
 export HADOOP_HOME=/home/broxton/ephemeral-hdfs
 export SPARK_MASTER_IP={{active_master}}
@@ -59,8 +59,8 @@ export MASTER=spark://{{active_master}}:7077
 
 export SPARK_PUBLIC_DNS=`wget -q -O - http://icanhazip.com/`
 
-export SPARK_DRIVER_MEMORY=30g
-export SPARK_WORKER_MEMORY=90g
+export SPARK_DRIVER_MEMORY=60g
+export SPARK_WORKER_MEMORY=200g
 
 export PYSPARK_DRIVER_PYTHON=/home/broxton/anaconda/bin/ipython
 export PYSPARK_PYTHON=/home/broxton/anaconda/bin/python
