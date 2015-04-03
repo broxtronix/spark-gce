@@ -610,8 +610,8 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
             'echo \'export SPARK_HOME=\$HOME/spark\' >> $HOME/.bashrc',
             'echo \'export JAVA_HOME=/usr/lib/jvm/java-1.7.0-openjdk-amd64\' >> $HOME/.bashrc']
     run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
-    run(ssh_wrap(master_node, opts.identity_file, 'sed -i "s/{{active_master}}/$(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1)/g" $HOME/spark/conf/spark-env.sh', verbose = opts.verbose) )
-    run(ssh_wrap(master_node, opts.identity_file, 'sed -i "s/{{active_master}}/$(/sbin/ifconfig eth0 | grep \"inet addr:\" | cut -d: -f2 | cut -d\" \" -f1)/g" $HOME/spark/conf/core-site.xml', verbose = opts.verbose) )
+    run(ssh_wrap(master_node, opts.identity_file, 'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/spark/conf/spark-env.sh', verbose = opts.verbose) )
+    run(ssh_wrap(master_node, opts.identity_file, 'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/spark/conf/core-site.xml', verbose = opts.verbose) )
 
     # Populate the file containing the list of all current slave nodes 
     import tempfile
@@ -806,11 +806,11 @@ def parse_args():
         "-i", "--identity-file", default = os.path.join(homedir, ".ssh", "google_compute_engine"),
         help="SSH private key file to use for logging into instances")
     parser.add_option(
-        "-t", "--instance-type", default="n1-highmem-16",
-        help="Type of instance to launch (default: n1-highmen-16).")
+        "-t", "--instance-type", default="n1-highmem-32",
+        help="Type of instance to launch (default: n1-highmem-32).")
     parser.add_option(
-        "-m", "--master-instance-type", default="n1-highmem-16",
-        help="Master instance type (leave empty for same as instance-type)")
+        "-m", "--master-instance-type", default="n1-highmem-32",
+        help="Master instance type (default: n1-highmem-32)")
     parser.add_option(
         "--boot-disk-type", default="pd-standard",
         help="Boot disk type.  Run \'gcloud compute disk-types list\' to see your options.")
