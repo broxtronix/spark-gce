@@ -579,9 +579,18 @@ def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
     print '[ Installing software dependencies (this will take several minutes) ]'
 
     cmds = [ 'sudo apt-get update -q -y',
-             'sudo apt-get install -q -y screen less git mosh pssh emacs bzip2 htop g++ openjdk-7-jdk',
+
+             # Install basic packages
+             'sudo apt-get install -q -y screen less git mosh pssh emacs bzip2 dstat iotop strace sysstat htop g++ openjdk-7-jdk',
+
+             # Rspark dependencies
+             'sudo apt-get install -q -y R-base realpath',  # Realpath is used by R to find java installations
+
+             # PySpark dependencies
              'wget http://09c8d0b2229f813c1b93-c95ac804525aac4b6dba79b00b39d1d3.r79.cf1.rackcdn.com/Anaconda-2.1.0-Linux-x86_64.sh',
              'rm -rf $HOME/anaconda && bash Anaconda-2.1.0-Linux-x86_64.sh -b && rm Anaconda-2.1.0-Linux-x86_64.sh',
+
+             # Set system path
              'echo \'export PATH=\$HOME/anaconda/bin:\$PATH:\$HOME/spark/bin:\$HOME/ephemeral-hdfs/bin\' >> $HOME/.bashrc'
          ]
 
@@ -705,9 +714,10 @@ def install_hadoop(cluster_name, opts, master_node, slave_nodes):
         # Build native hadoop libaries
         'cd /tmp && wget "http://archive.apache.org/dist/hadoop/common/hadoop-2.4.1/hadoop-2.4.1-src.tar.gz"',
         'cd /tmp && tar xvzf hadoop-2.4.1-src.tar.gz && rm hadoop-2.4.1-src.tar.gz',
-        'sudo apt-get install -q -y protobuf-compiler cmake libssl-dev maven pkg-config',
+        'sudo apt-get install -q -y protobuf-compiler cmake libssl-dev maven pkg-config libsnappy-dev',
         'cd /tmp/hadoop-2.4.1-src && mvn package -Pdist,native -DskipTests -Dmaven.javadoc.skip=true -Dtar',
         'mkdir -p $HOME/hadoop-native && sudo mv /tmp/hadoop-2.4.1-src/hadoop-dist/target/hadoop-2.4.1/lib/native/* $HOME/hadoop-native',
+        'cp /usr/lib/libsnappy.so.1 $HOME/hadoop-native',
         'rm -rf /tmp/hadoop-2.4.1-src',
         
         # Install Hadoop 2.0
