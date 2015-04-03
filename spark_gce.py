@@ -830,11 +830,11 @@ def parse_args():
         "-i", "--identity-file", default = os.path.join(homedir, ".ssh", "google_compute_engine"),
         help="SSH private key file to use for logging into instances")
     parser.add_option(
-        "-t", "--instance-type", default="n1-highmem-32",
-        help="Type of instance to launch (default: n1-highmem-32).")
+        "-t", "--instance-type", default="n1-highmem-16",
+        help="Type of instance to launch (default: n1-highmem-16).")
     parser.add_option(
-        "-m", "--master-instance-type", default="n1-highmem-32",
-        help="Master instance type (default: n1-highmem-32)")
+        "-m", "--master-instance-type", default="n1-highmem-16",
+        help="Master instance type (default: n1-highmem-16)")
     parser.add_option(
         "--boot-disk-type", default="pd-standard",
         help="Boot disk type.  Run \'gcloud compute disk-types list\' to see your options.")
@@ -851,7 +851,7 @@ def parse_args():
         "-p", "--project",
         help="GCE project to target when launching instances ( you can omit this argument if you set a default with \'gcloud config set project [project-name]\'")
     parser.add_option(
-        "-z", "--zone", default="us-central1-f",
+        "-z", "--zone", default="us-central1-b",
         help="GCE zone to target when launching instances ( you can omit this argument if you set a default with \'gcloud config set compute/zone [zone-name]\'")
     parser.add_option("--verbose",
                       action="store_true", dest="verbose", default=False,
