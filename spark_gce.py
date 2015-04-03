@@ -651,6 +651,18 @@ def configure_and_start_spark(cluster_name, opts, master_node, slave_nodes):
     run(ssh_wrap(master_node, opts.identity_file, 'if [ ! -d /mnt/spark ]; then mkdir /mnt/spark; fi', verbose = opts.verbose))
     run([ ssh_wrap(slave, opts.identity_file, 'if [ ! -d /mnt/spark ]; then mkdir /mnt/spark; fi', verbose = opts.verbose) for slave in slave_nodes ], parallelize = True)
 
+    # Patches to address system performance issues. These mimic settings used in
+    # the spark-ec2 scripts.
+
+    # Disable Transparent Huge Pages (THP)
+    # THP can result in system thrashing (high sys usage) due to frequent defrags of memory.
+    # Most systems recommends turning THP off.
+    run([ ssh_wrap(slave, opts.identity_file, 'if [[ -e /sys/kernel/mm/transparent_hugepage/enabled ]]; then sudo sh -c "echo never > /sys/kernel/mm/transparent_hugepage/enabled"; fi', verbose = opts.verbose) for slave in [master_node] + slave_nodes ], parallelize = True)
+
+
+    # Allow memory to be over committed. Helps in pyspark where we fork
+    run([ ssh_wrap(slave, opts.identity_file, 'sudo sh -c "echo 1 > /proc/sys/vm/overcommit_memory"', verbose = opts.verbose) for slave in [master_node] + slave_nodes ], parallelize = True)
+    
     print '[ Starting Spark ]'
     run(ssh_wrap(master_node, opts.identity_file, '$HOME/spark/sbin/start-all.sh', verbose = opts.verbose) )
 
