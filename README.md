@@ -64,6 +64,10 @@ or
 ```
 gcloud compute ssh <cluster_name>-master
 ```
+or if you prefer to use [mosh](https://mosh.mit.edu/)
+```
+gcloud compute mosh <cluster_name>-master
+```
 
 You can temporarily suspend your cluster while preserving the contents of its root disks, and then start it back up again.
 
