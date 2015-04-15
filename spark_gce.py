@@ -17,6 +17,19 @@ import shlex
 import threading
 import json
 
+# Global Variables
+#
+# We use just a few of these to keep the code below clean and simple
+VERBOSE = 0
+
+# Determine the path of the spark_gce.py file. We assume that all of the
+# templates and auxillary shell scripts are located here as well.
+SPARK_GCE_PATH =  os.path.dirname(os.path.realpath(__file__))
+
+if not os.path.exists(os.path.join(SPARK_GCE_PATH, "templates")):
+    raise Exception("There was an error locating installation support files. Spark GCE is not installed properly.  Please re-install.")
+
+
 # ----------------------------------------------------------------------------------------
 # run() can be used to execute multiple command line processes simultaneously.
 # This is particularly useful for long-running, network-bound processes like
@@ -48,9 +61,8 @@ def run_subprocess(cmds, result_queue):
             result_queue.put( (return_code, cmd, stdout) )
         else:
             result_queue.put( (return_code, cmd, None) )
-
             
-def run(cmds, parallelize = False, verbose = False, terminate_on_failure = True):
+def run(cmds, parallelize = False, terminate_on_failure = True):
     """Run commands in serial or in parallel.
 
     If cmds is a single command, it will run the command.
@@ -62,6 +74,7 @@ def run(cmds, parallelize = False, verbose = False, terminate_on_failure = True)
     serial within parallel threads.  (i.e. parallelism on the outer list)
 
     """
+    global VERBOSE
 
     import multiprocessing
     manager = multiprocessing.Manager()
@@ -76,13 +89,18 @@ def run(cmds, parallelize = False, verbose = False, terminate_on_failure = True)
     # List of lists forces parallelism to occur on the level of the outermost list.
     if isinstance(cmds[0], list):
         parallelize = True
+
+    # SSH commands don't take many local machine resources, so we can safely
+    # fire off a ridiculous number of them (up to 64, and then we relent
+    # and start to allow some commands to finish before starting others).
+    num_threads = min(len(cmds), 64)
         
-    # For debugging purposes (if verbose is True), print the commands we are
+    # For debugging purposes (if VERBOSE is True), print the commands we are
     # about to execute.
-    if verbose:
+    if VERBOSE >= 2:
         if isinstance(cmds[0], list):
             for cmd_group in cmds:
-                print "  [ Command Group (will execute in parallel) ]"
+                print "[ Command Group (will execute in parallel on %d threads) ]" % (num_threads)
                 for cmd in cmd_group:
                     print "  CMD: ", cmd
         else:
@@ -94,18 +112,14 @@ def run(cmds, parallelize = False, verbose = False, terminate_on_failure = True)
         # Run commands serially
         run_subprocess(cmds, result_queue)
                 
-    else: 
-
+    else:
+        pool = multiprocessing.Pool(processes = num_threads)
+        
         # Start worker threads.
-        jobs = []
         for cmd in cmds:
-            p = multiprocessing.Process(target=run_subprocess, args=(cmd, result_queue))
-            jobs.append(p)
-            p.start()
-
-        # Wait for all the sub-processes to finish processing their queries
-        for p in jobs:
-            p.join()
+            pool.apply_async(run_subprocess, args=(cmd, result_queue))
+        pool.close()
+        pool.join()
 
     # Check the results. Any failed commands are noted here, and their output is
     # printed to stdout.
@@ -130,36 +144,52 @@ def run(cmds, parallelize = False, verbose = False, terminate_on_failure = True)
         print failed_stdout[0]
         print "******************************************************************************************"
         sys.exit(1)
-    elif num_failed > 0 and not terminate_on_failure:
-        print "%d jobs failed, but were not set to terminate on failure.  The script will continue." % (num_failed)
+    else:
         return num_failed
+    
 
-    return 0
-
-def ssh_wrap(host, identity_file, cmds, verbose = False):
-    ''' 
-    Given a command to run on a remote host, this function wraps the command in
+def ssh_wrap(host, identity_file, cmds, group = False):
+    '''Given a command to run on a remote host, this function wraps the command in
     the appropriate ssh invocation that can be run on the local host to achieve
     the desired action on the remote host. This can then be passed to the run()
     function to execute the command on the remote host.
 
     This function can take a single command or a list of commands, and will
-    return a list of ssh-wrapped commands.
+    return a list of ssh-wrapped commands. However, if group = True, the list
+    of commands will be combined via the && shell operator and sent in a single
+    ssh command.
     '''
+    global VERBOSE
+
     if not isinstance(cmds, list):
         cmds = [ cmds ]
+
+    for cmd in cmds:
+        if VERBOSE >= 1: print '  SSH: ' + host['host_name'] + '\t', cmd
+
+    # Group commands using && to reduce the number of SSH commands that are
+    # executed.  This can speed things up on high latency connections.
+    if group == True:
+        cmds = [ ' && '.join(cmds) ]
+
 
     username = os.environ["USER"]
     result = []
     for cmd in cmds:
-        if verbose: print '  SSH: ' + host['host_name'] + '\t', cmd
-
         if host['external_ip'] is None:
             print "Error: attempting to ssh into machine instance \"%s\" without a public IP address.  Exiting." % (host["host_name"])
             sys.exit(1)
             
-        result.append( "ssh -i " + identity_file + " -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no -o LogLevel=quiet " + username + "@" + host['external_ip'] + " '" + cmd + "'" )
+        result.append( "ssh -i " + identity_file + " -o ConnectTimeout=900 -o \"BatchMode yes\" -o ServerAliveInterval=60 -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no -o LogLevel=quiet " + username + "@" + host['external_ip'] + " '" + cmd + "'" )
     return result
+
+def deploy_template(node, template_name):
+    global VERBOSE
+
+    cmd = "gcloud compute copy-files " + SPARK_GCE_PATH + "/templates/" + template_name + " " + node['host_name'] + ":" + template_name + " --zone " + node['zone']
+    if VERBOSE >= 1:
+        print "  TEMPLATE: ", template_name
+        run(cmd)
 
 # -------------------------------------------------------------------------------------
 
@@ -170,11 +200,12 @@ def get_command_prefix(cluster_name, opts):
     return command_prefix
 
 def check_gcloud(cluster_name, opts):
+    global VERBOSE
     
     cmd = "gcloud info"
     try:
         output = subprocess.check_output(cmd, shell=True)
-        if opts.verbose:
+        if VERBOSE >= 1:
             print '[ Verifying gcloud ]'
             print output
         
@@ -192,19 +223,21 @@ def wait_for_cluster(cluster_name, opts, retry_delay = 10, num_retries = 12):
     cluster_is_ready = False
     while True:
         cluster_is_ready = True
+        cmds = []
         for node in [master_node] + slave_nodes:
             # Check if the node has a public IP assigned yet. If not, the node
             # is still launching.
             if node['external_ip'] is None:
                 cluster_is_ready = False
+                break
             else:
                 # If the cluster node has an IP, then let's try to connect over
                 # ssh.  If that fails, the node is still not ready.
-                ssh_command = ssh_wrap(node, opts.identity_file, 'echo')
-                try:
-                    output = subprocess.check_output(ssh_command, shell=True)
-                except subprocess.CalledProcessError:
-                    cluster_is_ready = False
+                cmds.append(ssh_wrap(node, opts.identity_file, 'echo'))
+                
+        num_failed = run(cmds, terminate_on_failure = False)
+        if num_failed > 0:
+            cluster_is_ready = False
     
         if cluster_is_ready:
             return (master_node, slave_nodes)
@@ -287,7 +320,7 @@ def setup_network(cluster_name, opts):
     # cmds.append( command_prefix + ' compute firewall-rules delete ' + cluster_name + '-internal' )
     cmds.append( command_prefix + ' firewall-rules create ' + cluster_name + '-internal --network ' + cluster_name + '-network --allow tcp udp icmp' )
     cmds.append( command_prefix + ' firewall-rules create ' + cluster_name + '-spark-external --network ' + cluster_name + '-network --allow tcp:8080 tcp:4040 tcp:5080' )
-    run(cmds, verbose = opts.verbose)
+    run(cmds)
 
 def delete_network(cluster_name, opts):
     print '[ Deleting Network & Firewall Entries ]'
@@ -299,7 +332,7 @@ def delete_network(cluster_name, opts):
     cmds.append(  command_prefix + ' firewall-rules delete ' + cluster_name + '-internal --quiet' )
     cmds.append(  command_prefix + ' firewall-rules delete ' + cluster_name + '-spark-external --quiet' )
     cmds.append( command_prefix + ' networks delete "' + cluster_name + '-network" --quiet' )
-    run(cmds, verbose = opts.verbose)
+    run(cmds)
 
 # -------------------------------------------------------------------------------------
 #                      CLUSTER LAUNCH, DESTROY, START, STOP
@@ -322,18 +355,18 @@ def launch_cluster(cluster_name, opts):
  
     # Start master nodes & slave nodes
     cmds = []
-    cmds.append( command_prefix + ' instances create "' + cluster_name + '-master" --machine-type "' + opts.master_instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.full_control" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-md" --metadata startup-script-url=https://raw.githubusercontent.com/broxtronix/spark_gce/master/growroot.sh' + zone_str )
+    cmds.append( command_prefix + ' instances create "' + cluster_name + '-master" --machine-type "' + opts.master_instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.full_control" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-md" --metadata startup-script-url=http://storage.googleapis.com/spark-gce/growroot.sh' + zone_str )
     for i in xrange(opts.slaves):
-        cmds.append( command_prefix + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.full_control" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd" --metadata startup-script-url=https://raw.githubusercontent.com/broxtronix/spark_gce/master/growroot.sh' + zone_str )
+        cmds.append( command_prefix + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.full_control" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd" --metadata startup-script-url=http://storage.googleapis.com/spark-gce/growroot.sh' + zone_str )
 
     print '[ Launching nodes ]'
-    run(cmds, parallelize = True, verbose = opts.verbose)
+    run(cmds, parallelize = True)
 
     # Wait some time for machines to bootup. We consider the cluster ready when
     # all hosts have been assigned an IP address.
     print '[ Waiting for cluster to enter into SSH-ready state ]'
     (master_node, slave_nodes) = wait_for_cluster(cluster_name, opts)
-        
+
     # Generate SSH keys and deploy to workers and slaves
     deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes)
  
@@ -345,7 +378,7 @@ def launch_cluster(cluster_name, opts):
 
     # Install, configure, and start ganglia
     configure_ganglia(cluster_name, opts, master_node, slave_nodes)
-
+    
     # Install and configure Hadoop
     install_hadoop(cluster_name, opts, master_node, slave_nodes)
     configure_and_start_hadoop(cluster_name, opts, master_node, slave_nodes)
@@ -388,7 +421,7 @@ def destroy_cluster(cluster_name, opts):
 
         # Terminate the nodes
         print '[ Destroying %d nodes ]' % len(cmds)
-        run(cmds, parallelize = True, verbose = opts.verbose)
+        run(cmds, parallelize = True)
 
         # Delete the network
         delete_network(cluster_name, opts)
@@ -425,7 +458,7 @@ def stop_cluster(cluster_name, opts):
     #if proceed == 'y' or proceed == 'Y':
 
     print '[ Stopping nodes ]'
-    run(cmds, parallelize = True, verbose = opts.verbose, terminate_on_failure = False)
+    run(cmds, parallelize = True, terminate_on_failure = False)
 
     # Clean up scratch disks
     cleanup_scratch_disks(cluster_name, opts, detach_first = True)
@@ -453,7 +486,7 @@ def start_cluster(cluster_name, opts):
         cmds.append( command_prefix + ' instances start ' + instance['host_name'] + ' --zone ' + instance['zone'] )
 
     print '[ Starting nodes ]'
-    run(cmds, parallelize = True, verbose = opts.verbose)
+    run(cmds, parallelize = True)
 
     # Wait some time for machines to bootup. We consider the cluster ready when
     # all hosts have been assigned an IP address.
@@ -483,12 +516,17 @@ def start_cluster(cluster_name, opts):
     print "\n\n---------------------------------------------------------------------------"
 
 
-
-
+# -------------------------------------------------------------------------------------
+#                      INSTALLATION AND CONFIGURATION HELPERS
+# -------------------------------------------------------------------------------------
+    
 def deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes):
 
     print '[ Generating SSH keys on master and deploying to slave nodes ]'
 
+    # Create keys on the master node, add them into authorized_keys, and then
+    # pack up the archive. We also also pre-scan the ssh host identities of the
+    # slaves so that we can avoid KnownHostErrors.
     cmds = [ "rm -f ~/.ssh/id_rsa && rm -f ~/.ssh/known_hosts",
              "ssh-keygen -q -t rsa -N \"\" -f ~/.ssh/id_rsa",
              "cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys",
@@ -496,25 +534,21 @@ def deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes):
     for slave in slave_nodes:
         cmds.append( "ssh-keyscan -H " + slave['host_name'] + " >> ~/.ssh/known_hosts"  )
     cmds.append("tar czf .ssh.tgz .ssh");
+    run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
 
-    # Create keys on the master node, add them into authorized_keys, and then pack up the archive
-    run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
+    # Copy the ssh keys locally, and Clean up the archive on the master node.
+    run("gcloud compute copy-files " + cluster_name + "-master:.ssh.tgz /tmp/spark_gce_ssh.tgz --zone " + master_node['zone'])
+    run(ssh_wrap(master_node, opts.identity_file, "rm -f .ssh.tgz"))
 
-    # Copy the ssh keys locally, and then upload to the slaves.  
-    cmds = [ "gcloud compute copy-files " + cluster_name + "-master:.ssh.tgz /tmp/spark_gce_ssh.tgz --zone " + master_node['zone'] ]
-    for slave in slave_nodes:
-        cmds.append( "gcloud compute copy-files /tmp/spark_gce_ssh.tgz " + slave['host_name'] + ": --zone " + slave['zone'] )
-    cmds.append("rm -f /tmp/spark_gce_ssh.tgz")
-    run(cmds, verbose = opts.verbose)
-    
-    # Unpack the ssh keys on the slave nodes
+    # Upload to the slaves, and unpack the ssh keys on the slave nodes.
+    run(["gcloud compute copy-files /tmp/spark_gce_ssh.tgz " + slave['host_name'] + ": --zone " + slave['zone'] for slave in slave_nodes], parallelize = True)
     run( [ssh_wrap(slave,
                    opts.identity_file,
-                   "rm -rf ~/.ssh && tar xzf spark_gce_ssh.tgz && rm spark_gce_ssh.tgz",
-                   verbose = opts.verbose) for slave in slave_nodes], parallelize = True)
+                   "rm -rf ~/.ssh && tar xzf spark_gce_ssh.tgz && rm spark_gce_ssh.tgz")
+          for slave in slave_nodes], parallelize = True)
 
-    # Clean up the archive on the master node
-    run(ssh_wrap(master_node, opts.identity_file, "rm -f .ssh.tgz", verbose = opts.verbose))
+    # Clean up: delete the local copy of the ssh keys
+    run("rm -f /tmp/spark_gce_ssh.tgz")
 
 
 def attach_local_ssd(cluster_name, opts, master_node, slave_nodes):
@@ -525,10 +559,8 @@ def attach_local_ssd(cluster_name, opts, master_node, slave_nodes):
              'sudo /usr/share/google/safe_format_and_mount -m "mkfs.ext4 -F" /dev/disk/by-id/google-local-ssd-0 /mnt',
              'sudo chmod a+w /mnt']
 
-    run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
-
-    slave_cmds = [ ssh_wrap(slave, opts.identity_file, cmds, verbose = opts.verbose) for slave in slave_nodes ]
-    run(slave_cmds, parallelize = True)
+    cmds = [ ssh_wrap(slave, opts.identity_file, cmds, group = True) for slave in [master_node] + slave_nodes ]
+    run(cmds, parallelize = True)
 
 def cleanup_scratch_disks(cluster_name, opts, detach_first = True):
     cmd_prefix = get_command_prefix(cluster_name, opts)
@@ -543,13 +575,13 @@ def cleanup_scratch_disks(cluster_name, opts, detach_first = True):
         cmds = [ cmd_prefix + ' instances detach-disk ' + cluster_name + '-master --disk ' + cluster_name + '-m-scratch --zone ' + master_node['zone'] ]
         for i, slave in enumerate(slave_nodes):
             cmds.append( cmd_prefix + ' instances detach-disk ' + cluster_name + '-slave' + str(slave['slave_id']) + ' --disk ' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch --zone ' + slave['zone'] )
-        run(cmds, parallelize = True, verbose = opts.verbose, terminate_on_failure = False)
+        run(cmds, parallelize = True, terminate_on_failure = False)
 
     # Delete drives
     cmds = [ cmd_prefix + ' disks delete "' + cluster_name + '-m-scratch" --quiet --zone ' + master_node['zone'] ] 
     for i, slave in enumerate(slave_nodes):
         cmds.append( cmd_prefix + ' disks delete "' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch" --quiet --zone ' + slave['zone'] )
-    run(cmds, parallelize = True, verbose = opts.verbose, terminate_on_failure = False)
+    run(cmds, parallelize = True, terminate_on_failure = False)
 
 
 def attach_persistent_scratch_disks(cluster_name, opts, master_node, slave_nodes):
@@ -558,26 +590,47 @@ def attach_persistent_scratch_disks(cluster_name, opts, master_node, slave_nodes
     print '[ Adding new ' + opts.scratch_disk_size + ' drive of type "' + opts.scratch_disk_type + '" to each cluster node ]'
 
     cmds = []
-    cmds = [ [cmd_prefix + ' disks create "' + cluster_name + '-m-scratch" --size ' + opts.scratch_disk_size + ' --type "' + opts.scratch_disk_type + '" --zone ' + master_node['zone'],
-              cmd_prefix + ' instances attach-disk ' + cluster_name + '-master --device-name "' + cluster_name + '-m-scratch" --disk ' + cluster_name + '-m-scratch --zone ' + master_node['zone'],
-              ssh_wrap(master_node, opts.identity_file, "sudo mkfs.ext4 /dev/disk/by-id/google-"+ cluster_name + "-m-scratch " + " -F < /dev/null", verbose = opts.verbose ),
-              ssh_wrap(master_node, opts.identity_file, "sudo mount /dev/disk/by-id/google-"+ cluster_name + "-m-scratch /mnt", verbose = opts.verbose ),
-              ssh_wrap(master_node, opts.identity_file, 'sudo chown "$USER":"$USER" /mnt', verbose = opts.verbose ) ] ]
+    cmds.append( [cmd_prefix + ' disks create "' + cluster_name + '-m-scratch" --size ' + opts.scratch_disk_size + ' --type "' + opts.scratch_disk_type + '" --zone ' + master_node['zone'],
+                  cmd_prefix + ' instances attach-disk ' + cluster_name + '-master --device-name "' + cluster_name + '-m-scratch" --disk ' + cluster_name + '-m-scratch --zone ' + master_node['zone'],
+                  ssh_wrap(master_node, opts.identity_file, "sudo mkfs.ext4 /dev/disk/by-id/google-"+ cluster_name + "-m-scratch " + " -F < /dev/null && " + 
+                           "sudo mount /dev/disk/by-id/google-"+ cluster_name + "-m-scratch /mnt && " + 
+                           'sudo chown "$USER":"$USER" /mnt') ] )
 
     for slave in slave_nodes:
         cmds.append( [ cmd_prefix + ' disks create "' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch" --size ' + opts.scratch_disk_size + ' --type "' + opts.scratch_disk_type + '" --zone ' + slave['zone'],
                        cmd_prefix + ' instances attach-disk ' + cluster_name + '-slave' +  str(slave['slave_id']) + ' --disk ' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch --device-name "' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch" --zone ' + slave['zone'],
-                       ssh_wrap(slave, opts.identity_file, "sudo mkfs.ext4 /dev/disk/by-id/google-"+ cluster_name + "-s" + str(slave['slave_id']) + "-scratch " + " -F < /dev/null", verbose = opts.verbose ),
-                       ssh_wrap(slave, opts.identity_file, "sudo mount /dev/disk/by-id/google-"+ cluster_name + "-s" + str(slave['slave_id']) + "-scratch /mnt", verbose = opts.verbose ),
-                       ssh_wrap(slave, opts.identity_file, 'sudo chown "$USER":"$USER" /mnt', verbose = opts.verbose ) ] )
+                       ssh_wrap(slave, opts.identity_file, "sudo mkfs.ext4 /dev/disk/by-id/google-"+ cluster_name + "-s" + str(slave['slave_id']) + "-scratch " + " -F < /dev/null && " + 
+                                "sudo mount /dev/disk/by-id/google-"+ cluster_name + "-s" + str(slave['slave_id']) + "-scratch /mnt && " + 
+                                'sudo chown "$USER":"$USER" /mnt' ) ] )
 
     run(cmds, parallelize = True)
-    print '[ All volumns mounted, will be available at /mnt ]'
+    print '[ All volumes mounted, will be available at /mnt ]'
             
     
 def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
     print '[ Installing software dependencies (this will take several minutes) ]'
 
+    # Install the copy-dir script
+    run("gcloud compute copy-files " + SPARK_GCE_PATH + "/copy-dir " + cluster_name + "-master: --zone " + master_node['zone'])
+    cmds = ['mkdir -p $HOME/spark/bin && mkdir -p $HOME/spark/conf',
+            'mv $HOME/copy-dir $HOME/spark/bin',
+            'chmod 755 $HOME/spark/bin/copy-dir']
+    run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
+
+    # Create a file containing the list of all current slave nodes 
+    import tempfile
+    slave_file = tempfile.NamedTemporaryFile(delete = False)
+    for slave in slave_nodes:
+        slave_file.write(slave['host_name'] + '\n')
+    slave_file.close()
+    run("gcloud compute copy-files " + slave_file.name + " " + cluster_name + "-master:spark/conf/slaves --zone " + master_node['zone'])
+    os.unlink(slave_file.name)
+
+    # Download Anaconda, and copy to slave nodes
+    cmds = [ 'wget http://storage.googleapis.com/spark-gce/packages/Anaconda-2.1.0-Linux-x86_64.sh',
+             '$HOME/spark/bin/copy-dir Anaconda-2.1.0-Linux-x86_64.sh']
+    run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
+        
     cmds = [ 'sudo apt-get update -q -y',
 
              # Install basic packages
@@ -587,69 +640,62 @@ def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
              'sudo apt-get install -q -y R-base realpath',  # Realpath is used by R to find java installations
 
              # PySpark dependencies
-             'wget http://09c8d0b2229f813c1b93-c95ac804525aac4b6dba79b00b39d1d3.r79.cf1.rackcdn.com/Anaconda-2.1.0-Linux-x86_64.sh',
              'rm -rf $HOME/anaconda && bash Anaconda-2.1.0-Linux-x86_64.sh -b && rm Anaconda-2.1.0-Linux-x86_64.sh',
 
              # Set system path
              'echo \'export PATH=\$HOME/anaconda/bin:\$PATH:\$HOME/spark/bin:\$HOME/ephemeral-hdfs/bin\' >> $HOME/.bashrc'
          ]
-
-    master_cmds = [ ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose) ]
-    slave_cmds = [ ssh_wrap(slave, opts.identity_file, cmds, verbose = opts.verbose) for slave in slave_nodes ]
-    
-    run(master_cmds + slave_cmds, parallelize = True)
+    cmds = [ ssh_wrap(node, opts.identity_file, cmds, group = True) for node in [master_node] + slave_nodes ]
+    run(cmds, parallelize = True)
 
 def install_spark(cluster_name, opts, master_node, slave_nodes):
     print '[ Installing Spark ]'
 
     # Install Spark and Scala
-    cmds = [ 'if [ ! -d $HOME/packages ]; then mkdir $HOME/packages; fi',
+    cmds = [ 'mkdir -p $HOME/packages',
              'cd $HOME/packages && wget http://mirror.cc.columbia.edu/pub/software/apache/spark/spark-1.3.0/spark-1.3.0-bin-cdh4.tgz',
              'cd $HOME/packages && tar xvf spark-1.3.0-bin-cdh4.tgz && rm spark-1.3.0-bin-cdh4.tgz',
-             'rm -f $HOME/spark && ln -s $HOME/packages/spark-1.3.0-bin-cdh4 $HOME/spark',
+             'rm -rf $HOME/spark && ln -s $HOME/packages/spark-1.3.0-bin-cdh4 $HOME/spark',
              'cd $HOME/packages && wget http://downloads.typesafe.com/scala/2.11.6/scala-2.11.6.tgz',
              'cd $HOME/packages && tar xvzf scala-2.11.6.tgz && rm -rf scala-2.11.6.tgz']
-    run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
+    run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
 
     # Set up the spark-env.conf and spark-defaults.conf files
-    cmds = ['cd $HOME/spark/conf && rm -f spark-env.sh && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/spark/spark-env.sh',
-            'cd $HOME/spark/conf && rm -f spark-defaults.conf && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/spark/spark-defaults.conf',
-            'cd $HOME/spark/conf && rm -f core-site.xml && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/spark/core-site.xml',
-            'cd $HOME/spark/conf && chmod +x spark-env.sh',
-            'echo \'export SPARK_HOME=\$HOME/spark\' >> $HOME/.bashrc',
+    deploy_template(master_node, "spark/conf/spark-env.sh")
+    deploy_template(master_node, "spark/conf/core-site.xml")
+    deploy_template(master_node, "spark/conf/spark-defaults.conf")
+    deploy_template(master_node, "spark/setup-auth.sh")
+    cmds = ['echo \'export SPARK_HOME=\$HOME/spark\' >> $HOME/.bashrc',
             'echo \'export JAVA_HOME=/usr/lib/jvm/java-1.7.0-openjdk-amd64\' >> $HOME/.bashrc',
-            'cd $HOME/spark/conf && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/spark/setup-auth.sh && chmod 755 setup-auth.sh',
-            '$HOME/spark/conf/setup-auth.sh']
-    run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
-    run(ssh_wrap(master_node, opts.identity_file, 'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/spark/conf/spark-env.sh', verbose = opts.verbose) )
-    run(ssh_wrap(master_node, opts.identity_file, 'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/spark/conf/core-site.xml', verbose = opts.verbose) )
+            '$HOME/spark/setup-auth.sh',
+            'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/spark/conf/spark-env.sh',
+            'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/spark/conf/core-site.xml'
+    ]
+    run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
 
-    # Populate the file containing the list of all current slave nodes 
+    # (Re-)populate the file containing the list of all current slave nodes 
     import tempfile
     slave_file = tempfile.NamedTemporaryFile(delete = False)
     for slave in slave_nodes:
         slave_file.write(slave['host_name'] + '\n')
     slave_file.close()
     cmds = [ "gcloud compute copy-files " + slave_file.name + " " + cluster_name + "-master:spark/conf/slaves --zone " + master_node['zone']]
-    run(cmds, verbose = opts.verbose)
+    run(cmds)
     os.unlink(slave_file.name)
     
     # Install the copy-dir script
-    cmds = ['cd $HOME/spark/bin && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/copy-dir',
-            'chmod 755 $HOME/spark/bin/copy-dir']
-    run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
+    run("gcloud compute copy-files " + SPARK_GCE_PATH + "/copy-dir " + cluster_name + "-master:spark/bin --zone " + master_node['zone'])
     
     # Copy spark to the slaves and create a symlink to $HOME/spark
-    run(ssh_wrap(master_node, opts.identity_file, '$HOME/spark/bin/copy-dir $HOME/packages/spark-1.3.0-bin-cdh4', verbose = opts.verbose))
-    run([ ssh_wrap(slave, opts.identity_file, 'rm -f $HOME/spark && ln -s $HOME/packages/spark-1.3.0-bin-cdh4 $HOME/spark', verbose = opts.verbose) for slave in slave_nodes ], parallelize = True)
+    run(ssh_wrap(master_node, opts.identity_file, '$HOME/spark/bin/copy-dir $HOME/packages/spark-1.3.0-bin-cdh4'))
+    run([ ssh_wrap(slave, opts.identity_file, 'rm -f $HOME/spark && ln -s $HOME/packages/spark-1.3.0-bin-cdh4 $HOME/spark') for slave in slave_nodes ], parallelize = True)
 
 
 def configure_and_start_spark(cluster_name, opts, master_node, slave_nodes):
     print '[ Configuring Spark ]'
 
     # Create the Spark scratch directory on the local SSD
-    run(ssh_wrap(master_node, opts.identity_file, 'if [ ! -d /mnt/spark ]; then mkdir /mnt/spark; fi', verbose = opts.verbose))
-    run([ ssh_wrap(slave, opts.identity_file, 'if [ ! -d /mnt/spark ]; then mkdir /mnt/spark; fi', verbose = opts.verbose) for slave in slave_nodes ], parallelize = True)
+    run([ ssh_wrap(node, opts.identity_file, 'if [ ! -d /mnt/spark ]; then mkdir /mnt/spark; fi') for node in [master_node] + slave_nodes ], parallelize = True)
 
     # Patches to address system performance issues. These mimic settings used in
     # the spark-ec2 scripts.
@@ -657,139 +703,136 @@ def configure_and_start_spark(cluster_name, opts, master_node, slave_nodes):
     # Disable Transparent Huge Pages (THP)
     # THP can result in system thrashing (high sys usage) due to frequent defrags of memory.
     # Most systems recommends turning THP off.
-    run([ ssh_wrap(slave, opts.identity_file, 'if [[ -e /sys/kernel/mm/transparent_hugepage/enabled ]]; then sudo sh -c "echo never > /sys/kernel/mm/transparent_hugepage/enabled"; fi', verbose = opts.verbose) for slave in [master_node] + slave_nodes ], parallelize = True)
-
+    run([ ssh_wrap(node, opts.identity_file, 'if [[ -e /sys/kernel/mm/transparent_hugepage/enabled ]]; then sudo sh -c "echo never > /sys/kernel/mm/transparent_hugepage/enabled"; fi') for node in [master_node] + slave_nodes ], parallelize = True)
 
     # Allow memory to be over committed. Helps in pyspark where we fork
-    run([ ssh_wrap(slave, opts.identity_file, 'sudo sh -c "echo 1 > /proc/sys/vm/overcommit_memory"', verbose = opts.verbose) for slave in [master_node] + slave_nodes ], parallelize = True)
-    
+    run([ ssh_wrap(node, opts.identity_file, 'sudo sh -c "echo 1 > /proc/sys/vm/overcommit_memory"') for node in [master_node] + slave_nodes ], parallelize = True)
+
+    # Start Spark
     print '[ Starting Spark ]'
-    run(ssh_wrap(master_node, opts.identity_file, '$HOME/spark/sbin/start-all.sh', verbose = opts.verbose) )
+    run(ssh_wrap(master_node, opts.identity_file, '$HOME/spark/sbin/start-all.sh') )
 
     
 def configure_ganglia(cluster_name, opts, master_node, slave_nodes):
     print '[ Configuring Ganglia ]'
+    
+    run(ssh_wrap(master_node, opts.identity_file, "mkdir -p ganglia", group = True))
 
+    deploy_template(master_node, "ganglia/ports.conf")
+    deploy_template(master_node, "ganglia/ganglia.conf")
+    deploy_template(master_node, "ganglia/gmetad.conf")
+    deploy_template(master_node, "ganglia/gmond.conf")
+    deploy_template(master_node, "ganglia/000-default.conf")
+    
     # Install gmetad and the ganglia web front-end on the master node
     cmds = [ 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -q -y ganglia-webfrontend gmetad ganglia-monitor',
-             'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/ganglia/ports.conf',
-             'sudo mv ports.conf /etc/apache2/ && rm -f ports.conf',
-             'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/ganglia/000-default.conf',
-             'sudo mv 000-default.conf /etc/apache2/sites-enabled/ && rm -f 000-default.conf',
-             'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/ganglia/ganglia.conf',
-             'sudo mv ganglia.conf /etc/apache2/sites-enabled/ && rm -f ganglia.conf',
-
-             # Set up ganglia to log data to the scratch drive, since the root drive is small
-             'sudo rm -rf /var/lib/ganglia/rrds/* && sudo rm -rf /mnt/ganglia/rrds/*',
+             'sudo cp $HOME/ganglia/ports.conf /etc/apache2/ && rm -f ports.conf',
+             'sudo cp $HOME/ganglia/000-default.conf /etc/apache2/sites-enabled/ && rm -f 000-default.conf',
+             'sudo cp $HOME/ganglia/ganglia.conf /etc/apache2/sites-enabled/ && rm -f ganglia.conf'
+    ]
+    run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
+    
+    # Set up ganglia to log data to the scratch drive, since the root drive is small
+    cmds = ['sudo rm -rf /var/lib/ganglia/rrds/* && sudo rm -rf /mnt/ganglia/rrds/*',
              'sudo mkdir -p /mnt/ganglia/rrds',
              'sudo chown -R nobody:root /mnt/ganglia/rrds',
              'sudo rm -rf /var/lib/ganglia/rrds',
-             'sudo ln -s /mnt/ganglia/rrds /var/lib/ganglia/rrds',
-
-             # Configure gmond and gmetad on the master node
-             'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/ganglia/gmetad.conf',
-             'sed -i -e  "s/{{master-node}}/' + cluster_name + '-master/g" gmetad.conf',
-             'sudo mv gmetad.conf /etc/ganglia/ && rm -f gmetad.conf',
-             'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/ganglia/gmond.conf',
-             'sed -i -e  "s/{{master-node}}/' + cluster_name + '-master/g" gmond.conf', 
-             'sudo mv gmond.conf /etc/ganglia/ && rm -f gmond.conf',
-             'sudo service gmetad restart && sudo service ganglia-monitor restart && sudo service apache2 restart'
+             'sudo ln -s /mnt/ganglia/rrds /var/lib/ganglia/rrds'
     ]
-    run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
+    run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
+
+    # Configure gmond and gmetad on the master node
+    cmds = ['sed -i -e  "s/{{master-node}}/' + cluster_name + '-master/g" $HOME/ganglia/gmetad.conf',
+            'sudo cp $HOME/ganglia/gmetad.conf /etc/ganglia/',
+            'sed -i -e  "s/{{master-node}}/' + cluster_name + '-master/g" $HOME/ganglia/gmond.conf', 
+            'sudo cp $HOME/ganglia/gmond.conf /etc/ganglia/',
+            'sudo service gmetad restart && sudo service ganglia-monitor restart && sudo service apache2 restart'
+    ]
+    run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
 
     # Sleep for a sec
     import time
     time.sleep(2)
 
     # Install and configure gmond everywhere
+    run(ssh_wrap(master_node, opts.identity_file, "$HOME/spark/bin/copy-dir $HOME/ganglia", group = True))
     cmds = [ 'sudo apt-get install -q -y ganglia-monitor gmetad',
              'sudo rm -rf /var/lib/ganglia/rrds/* && sudo rm -rf /mnt/ganglia/rrds/*',
              'sudo mkdir -p /mnt/ganglia/rrds',
              'sudo chown -R nobody:root /mnt/ganglia/rrds',
              'sudo rm -rf /var/lib/ganglia/rrds',
              'sudo ln -s /mnt/ganglia/rrds /var/lib/ganglia/rrds',
-             'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/ganglia/gmond.conf',
-             'sed -i -e  "s/{{master-node}}/' + cluster_name + '-master/g" gmond.conf', 
-             'sudo mv gmond.conf /etc/ganglia/ && rm -f gmond.conf',
-             'wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/ganglia/gmetad.conf',
-             'sed -i -e  "s/{{master-node}}/' + cluster_name + '-master/g" gmetad.conf',
-             'sudo mv gmetad.conf /etc/ganglia/ && rm -f gmetad.conf',
+
+             'sudo cp $HOME/ganglia/gmond.conf /etc/ganglia/',
+             'sudo cp $HOME/ganglia/gmetad.conf /etc/ganglia/',
+             'sudo rm -rf $HOME/ganglia',
              'sudo service ganglia-monitor restart']
-    run([ssh_wrap(node, opts.identity_file, cmds, verbose = opts.verbose) for node in slave_nodes])
+    cmds = [ssh_wrap(node, opts.identity_file, cmds, group = True) for node in slave_nodes]
+    run(cmds, parallelize = True)
 
 
 def install_hadoop(cluster_name, opts, master_node, slave_nodes):
 
     print '[ Installing hadoop (this will take several minutes) ]'
 
-    cmds = [
-        # Build native hadoop libaries
-        'cd /tmp && wget "http://archive.apache.org/dist/hadoop/common/hadoop-2.4.1/hadoop-2.4.1-src.tar.gz"',
-        'cd /tmp && tar xvzf hadoop-2.4.1-src.tar.gz && rm hadoop-2.4.1-src.tar.gz',
-        'sudo apt-get install -q -y protobuf-compiler cmake libssl-dev maven pkg-config libsnappy-dev',
-        'cd /tmp/hadoop-2.4.1-src && mvn package -Pdist,native -DskipTests -Dmaven.javadoc.skip=true -Dtar',
-        'mkdir -p $HOME/hadoop-native && sudo mv /tmp/hadoop-2.4.1-src/hadoop-dist/target/hadoop-2.4.1/lib/native/* $HOME/hadoop-native',
-        'cp /usr/lib/libsnappy.so.1 $HOME/hadoop-native',
-        'rm -rf /tmp/hadoop-2.4.1-src',
-        
-        # Install Hadoop 2.0
-        'wget http://s3.amazonaws.com/spark-related-packages/hadoop-2.0.0-cdh4.2.0.tar.gz',
+    # Download pre-built Hadoop Native libraries
+    cmds = ['sudo apt-get install -q -y protobuf-compiler cmake libssl-dev maven pkg-config libsnappy-dev',
+            'wget http://storage.googleapis.com/spark-gce/packages/hadoop-native.tgz',
+            'tar xvzf hadoop-native.tgz && rm -f hadoop-native.tgz']
+    run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
+    
+    # Builds native hadoop libaries from source (slow!)
+    # cmds = [
+    #     'cd /tmp && wget "http://archive.apache.org/dist/hadoop/common/hadoop-2.4.1/hadoop-2.4.1-src.tar.gz"',
+    #     'cd /tmp && tar xvzf hadoop-2.4.1-src.tar.gz && rm -f hadoop-2.4.1-src.tar.gz',
+    #     'sudo apt-get install -q -y protobuf-compiler cmake libssl-dev maven pkg-config libsnappy-dev',
+    #     'cd /tmp/hadoop-2.4.1-src && mvn package -Pdist,native -DskipTests -Dmaven.javadoc.skip=true -Dtar',
+    #     'mkdir -p $HOME/hadoop-native && sudo mv /tmp/hadoop-2.4.1-src/hadoop-dist/target/hadoop-2.4.1/lib/native/* $HOME/hadoop-native',
+    #     'cp /usr/lib/libsnappy.so.1 $HOME/hadoop-native',
+    #     'rm -rf /tmp/hadoop-2.4.1-src',
+    # ]
+    # run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
+    
+    # Install Hadoop 2.0
+    cmds = ['wget http://s3.amazonaws.com/spark-related-packages/hadoop-2.0.0-cdh4.2.0.tar.gz',
         'tar xvzf hadoop-*.tar.gz > /tmp/spark-ec2_hadoop.log',
         'rm hadoop-*.tar.gz',
         'rm -rf ephemeral-hdfs && mv hadoop-2.0.0-cdh4.2.0 ephemeral-hdfs',
         'rm -rf $HOME/ephemeral-hdfs/etc/hadoop/',   # Use a single conf directory
         'mkdir -p $HOME/ephemeral-hdfs/conf && ln -s $HOME/ephemeral-hdfs/conf $HOME/ephemeral-hdfs/etc/hadoop',
         'cp $HOME/hadoop-native/* $HOME/ephemeral-hdfs/lib/native/',
-        'cd ephemeral-hdfs && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/setup-slave.sh && chmod 755 setup-slave.sh',
-        'cd ephemeral-hdfs && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/setup-auth.sh && chmod 755 setup-auth.sh',
+        'cp $HOME/spark/conf/slaves $HOME/ephemeral-hdfs/conf/',
 
         # Install the Google Storage adaptor
         'cd $HOME/ephemeral-hdfs/share/hadoop/hdfs/lib && rm -f gcs-connector-latest-hadoop2.jar && wget https://storage.googleapis.com/hadoop-lib/gcs/gcs-connector-latest-hadoop2.jar',
     ]
-    run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
-
-    # Set up Hadoop configuration files from the templates
-    cmds = [
-        'cd $HOME/ephemeral-hdfs/conf && rm -f core-site.xml && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/conf/core-site.xml',
-        'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/ephemeral-hdfs/conf/core-site.xml',
+    run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
         
-        'cd $HOME/ephemeral-hdfs/conf && rm -f hadoop-env.sh && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/conf/hadoop-env.sh && chmod 755 hadoop-env.sh',
+    # Set up Hadoop configuration files from the templates
+    deploy_template(master_node, "ephemeral-hdfs/conf/core-site.xml")
+    deploy_template(master_node, "ephemeral-hdfs/conf/hadoop-env.sh")
+    deploy_template(master_node, "ephemeral-hdfs/conf/hadoop-metrics2.properties")
+    deploy_template(master_node, "ephemeral-hdfs/conf/hdfs-site.xml")
+    deploy_template(master_node, "ephemeral-hdfs/conf/mapred-site.xml")
+    deploy_template(master_node, "ephemeral-hdfs/conf/masters")
+
+    cmds = [
+        'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/ephemeral-hdfs/conf/core-site.xml',
         'sed -i "s/{{java_home}}/\/usr\/lib\/jvm\/java-1.7.0-openjdk-amd64/g" $HOME/ephemeral-hdfs/conf/hadoop-env.sh',
-
-        'cd $HOME/ephemeral-hdfs/conf && rm -f hadoop-metrics2.properties && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/conf/hadoop-metrics2.properties',
         'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/ephemeral-hdfs/conf/hadoop-metrics2.properties',
-
-        'cd $HOME/ephemeral-hdfs/conf && rm -f hdfs-site.xml && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/conf/hdfs-site.xml',
         'sed -i "s/{{hdfs_data_dirs}}/\/mnt\/hadoop\/dfs\/data/g" $HOME/ephemeral-hdfs/conf/hdfs-site.xml',
-                
-        'cd $HOME/ephemeral-hdfs/conf && rm -f mapred-site.xml && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/conf/mapred-site.xml',
         'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/ephemeral-hdfs/conf/mapred-site.xml',
-
-        'cd $HOME/ephemeral-hdfs/conf && rm -f masters && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/templates/hadoop/conf/masters',
         'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/ephemeral-hdfs/conf/masters',
     ]
-    run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
+    run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
 
     # Set up authentication for the Hadoop Google Storage adaptor
-    run(ssh_wrap(master_node, opts.identity_file,'$HOME/ephemeral-hdfs/setup-auth.sh', opts.verbose))
-
-    # Populate the file containing the list of all current slave nodes 
-    import tempfile
-    slave_file = tempfile.NamedTemporaryFile(delete = False)
-    for slave in slave_nodes:
-        slave_file.write(slave['host_name'] + '\n')
-    slave_file.close()
-    cmds = [ "gcloud compute copy-files " + slave_file.name + " " + cluster_name + "-master:ephemeral-hdfs/conf/slaves --zone " + master_node['zone']]
-    run(cmds, verbose = opts.verbose)
-    os.unlink(slave_file.name)
-
-    # Install the copy-dir script
-    cmds = ['cd $HOME/ephemeral-hdfs/bin && wget https://raw.githubusercontent.com/broxtronix/spark_gce/master/copy-dir',
-            'chmod 755 $HOME/ephemeral-hdfs/bin/copy-dir']
-    run(ssh_wrap(master_node, opts.identity_file, cmds, verbose = opts.verbose))
+    deploy_template(master_node, "ephemeral-hdfs/setup-auth.sh")
+    deploy_template(master_node, "ephemeral-hdfs/setup-slave.sh")
+    run(ssh_wrap(master_node, opts.identity_file,'$HOME/ephemeral-hdfs/setup-auth.sh'))
 
     # Copy the hadoop directory from the master node to the slave nodes
-    run(ssh_wrap(master_node, opts.identity_file,'$HOME/ephemeral-hdfs/bin/copy-dir $HOME/ephemeral-hdfs', opts.verbose))
+    run(ssh_wrap(master_node, opts.identity_file,'$HOME/spark/bin/copy-dir $HOME/ephemeral-hdfs'))
 
     
 def configure_and_start_hadoop(cluster_name, opts, master_node, slave_nodes):
@@ -797,14 +840,14 @@ def configure_and_start_hadoop(cluster_name, opts, master_node, slave_nodes):
     print '[ Configuring hadoop ]'
 
     # Set up the ephemeral HDFS directories
-    cmds = [ ssh_wrap(node, opts.identity_file,'$HOME/ephemeral-hdfs/setup-slave.sh', opts.verbose) for node in [master_node] + slave_nodes ]
+    cmds = [ ssh_wrap(node, opts.identity_file,'$HOME/ephemeral-hdfs/setup-slave.sh') for node in [master_node] + slave_nodes ]
     run(cmds, parallelize = True)
 
     # Format the ephemeral HDFS
-    run(ssh_wrap(master_node, opts.identity_file,'$HOME/ephemeral-hdfs/bin/hadoop namenode -format', opts.verbose))
+    run(ssh_wrap(master_node, opts.identity_file,'$HOME/ephemeral-hdfs/bin/hadoop namenode -format'))
 
     # Start Hadoop HDFS
-    run(ssh_wrap(master_node, opts.identity_file,'$HOME/ephemeral-hdfs/sbin/start-dfs.sh', opts.verbose))
+    run(ssh_wrap(master_node, opts.identity_file,'$HOME/ephemeral-hdfs/sbin/start-dfs.sh'))
 
     
 def parse_args():
@@ -853,9 +896,8 @@ def parse_args():
     parser.add_option(
         "-z", "--zone", default="us-central1-b",
         help="GCE zone to target when launching instances ( you can omit this argument if you set a default with \'gcloud config set compute/zone [zone-name]\'")
-    parser.add_option("--verbose",
-                      action="store_true", dest="verbose", default=False,
-                      help="Show verbose output.")
+    parser.add_option("--verbose", type = int, default = 0,
+                      help="Set debugging level (0 - minimal, 1 - some, 2 - a lot).")
     parser.add_option("--ssh-port-forwarding", default=None,
                       help="Set up ssh port forwarding when you login to the cluster.  " +
                       "This provides a convenient alternative to connecting to iPython " +
@@ -867,6 +909,9 @@ def parse_args():
         parser.print_help()
         sys.exit(1)
 
+    global VERBOSE
+    VERBOSE = opts.verbose
+        
     try:
         (action, cluster_name, optional_arg) = args
         return (opts, action, cluster_name, optional_arg)

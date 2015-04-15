@@ -37,7 +37,7 @@ DIR=`readlink -f "$1"`
 DIR=`echo "$DIR"|sed 's@/$@@'`
 DEST=`dirname "$DIR"`
 
-SLAVES=`cat $HOME/ephemeral-hdfs/conf/slaves`
+SLAVES=`cat $HOME/spark/conf/slaves`
 
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=5"
 
