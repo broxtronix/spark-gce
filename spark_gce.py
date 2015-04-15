@@ -726,9 +726,9 @@ def configure_ganglia(cluster_name, opts, master_node, slave_nodes):
     
     # Install gmetad and the ganglia web front-end on the master node
     cmds = [ 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -q -y ganglia-webfrontend gmetad ganglia-monitor',
-             'sudo cp $HOME/ganglia/ports.conf /etc/apache2/ && rm -f ports.conf',
-             'sudo cp $HOME/ganglia/000-default.conf /etc/apache2/sites-enabled/ && rm -f 000-default.conf',
-             'sudo cp $HOME/ganglia/ganglia.conf /etc/apache2/sites-enabled/ && rm -f ganglia.conf'
+             'sudo cp $HOME/ganglia/ports.conf /etc/apache2/',
+             'sudo cp $HOME/ganglia/000-default.conf /etc/apache2/sites-enabled/',
+             'sudo cp $HOME/ganglia/ganglia.conf /etc/apache2/sites-enabled/'
     ]
     run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
     
