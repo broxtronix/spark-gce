@@ -945,8 +945,8 @@ def ssh_cluster(cluster_name, opts):
     #
     # If the user has requested ssh port forwarding, we set
     # that up here.
-    if opts.ssh_port_forwarding is not None:
-        ssh_ports = opts.ssh_port_forwarding.split(":")
+    if opts.ssh_tunnel is not None:
+        ssh_ports = opts.ssh_tunnel.split(":")
         if len(ssh_ports) != 2:
             print "\nERROR: Could not parse arguments to \'--ssh-port-forwarding\'."
             print "       Be sure you use the syntax \'local_port:remote_port\'"
