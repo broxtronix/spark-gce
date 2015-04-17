@@ -183,17 +183,18 @@ def ssh_wrap(host, identity_file, cmds, group = False):
         result.append( "ssh -i " + identity_file + " -o ConnectTimeout=900 -o \"BatchMode yes\" -o ServerAliveInterval=60 -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no -o LogLevel=quiet " + username + "@" + host['external_ip'] + " '" + cmd + "'" )
     return result
 
-def deploy_template(node, template_name):
+def deploy_template(opts, node, template_name):
     global VERBOSE
+    command_prefix = get_command_prefix(opts)
 
-    cmd = "gcloud compute copy-files " + SPARK_GCE_PATH + "/templates/" + template_name + " " + node['host_name'] + ":" + template_name + " --zone " + node['zone']
+    cmd = command_prefix + " copy-files " + SPARK_GCE_PATH + "/templates/" + template_name + " " + node['host_name'] + ":" + template_name + " --zone " + node['zone']
     if VERBOSE >= 1:
         print "  TEMPLATE: ", template_name
         run(cmd)
 
 # -------------------------------------------------------------------------------------
 
-def get_command_prefix(cluster_name, opts):
+def get_command_prefix(opts):
     command_prefix = 'gcloud compute'
     if opts.project:
         command_prefix += ' --project ' + opts.project
@@ -250,7 +251,7 @@ def wait_for_cluster(cluster_name, opts, retry_delay = 10, num_retries = 12):
             sys.exit(1)
 
 def get_cluster_info(cluster_name, opts):
-    command_prefix = get_command_prefix(cluster_name, opts)
+    command_prefix = get_command_prefix(opts)
         
     command = command_prefix + ' instances list --format json'
     try:
@@ -283,7 +284,7 @@ def get_cluster_info(cluster_name, opts):
     return (master_node, slave_nodes)
 
 def get_cluster_scratch_disks(cluster_name, opts):
-    command_prefix = get_command_prefix(cluster_name, opts)
+    command_prefix = get_command_prefix(opts)
     
     command = command_prefix + ' disks list --format json'
     try:
@@ -311,7 +312,7 @@ def get_cluster_scratch_disks(cluster_name, opts):
 def setup_network(cluster_name, opts):
 
     print '[ Setting up Network & Firewall Entries ]'
-    command_prefix = get_command_prefix(cluster_name, opts)
+    command_prefix = get_command_prefix(opts)
     cmds = []
 
     cmds.append( command_prefix + ' networks create "' + cluster_name + '-network" --range "10.240.0.0/16"' )
@@ -324,7 +325,7 @@ def setup_network(cluster_name, opts):
 
 def delete_network(cluster_name, opts):
     print '[ Deleting Network & Firewall Entries ]'
-    command_prefix = get_command_prefix(cluster_name, opts)
+    command_prefix = get_command_prefix(opts)
     cmds = []
 
     # Uncomment the above and comment the below section if you don't want to open all ports for public.
@@ -343,7 +344,7 @@ def launch_cluster(cluster_name, opts):
     Create a new cluster. 
     """
     print '[ Launching cluster: %s ]' % cluster_name
-    command_prefix = get_command_prefix(cluster_name, opts)
+    command_prefix = get_command_prefix(opts)
 
     if opts.zone:
         zone_str = ' --zone ' + opts.zone
@@ -400,7 +401,7 @@ def destroy_cluster(cluster_name, opts):
     Delete a cluster permanently.  All state will be lost.
     """
     print '[ Destroying cluster: %s ]'  % (cluster_name)
-    command_prefix = get_command_prefix(cluster_name, opts)
+    command_prefix = get_command_prefix(opts)
 
     # Get cluster machines
     (master_node, slave_nodes) = get_cluster_info(cluster_name, opts)
@@ -437,7 +438,7 @@ def stop_cluster(cluster_name, opts):
     persist across reboots, but any data on attached drives will be lost.
     """
     print '[ Stopping cluster: %s ]' % cluster_name
-    command_prefix = get_command_prefix(cluster_name, opts)
+    command_prefix = get_command_prefix(opts)
 
     # Get cluster machines
     (master_node, slave_nodes) = get_cluster_info(cluster_name, opts)
@@ -473,7 +474,7 @@ def start_cluster(cluster_name, opts):
     Start a cluster that is in the stopped state.
     """
     print '[ Starting cluster: %s ]' % (cluster_name)
-    command_prefix = get_command_prefix(cluster_name, opts)
+    command_prefix = get_command_prefix(opts)
 
     # Get cluster machines
     (master_node, slave_nodes) = get_cluster_info(cluster_name, opts)
@@ -521,6 +522,7 @@ def start_cluster(cluster_name, opts):
 # -------------------------------------------------------------------------------------
     
 def deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes):
+    command_prefix = get_command_prefix(opts)
 
     print '[ Generating SSH keys on master and deploying to slave nodes ]'
 
@@ -537,11 +539,11 @@ def deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes):
     run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
 
     # Copy the ssh keys locally, and Clean up the archive on the master node.
-    run("gcloud compute copy-files " + cluster_name + "-master:.ssh.tgz /tmp/spark_gce_ssh.tgz --zone " + master_node['zone'])
+    run(command_prefix + " copy-files " + cluster_name + "-master:.ssh.tgz /tmp/spark_gce_ssh.tgz --zone " + master_node['zone'])
     run(ssh_wrap(master_node, opts.identity_file, "rm -f .ssh.tgz"))
 
     # Upload to the slaves, and unpack the ssh keys on the slave nodes.
-    run(["gcloud compute copy-files /tmp/spark_gce_ssh.tgz " + slave['host_name'] + ": --zone " + slave['zone'] for slave in slave_nodes], parallelize = True)
+    run([command_prefix + " copy-files /tmp/spark_gce_ssh.tgz " + slave['host_name'] + ": --zone " + slave['zone'] for slave in slave_nodes], parallelize = True)
     run( [ssh_wrap(slave,
                    opts.identity_file,
                    "rm -rf ~/.ssh && tar xzf spark_gce_ssh.tgz && rm spark_gce_ssh.tgz")
@@ -563,7 +565,7 @@ def attach_local_ssd(cluster_name, opts, master_node, slave_nodes):
     run(cmds, parallelize = True)
 
 def cleanup_scratch_disks(cluster_name, opts, detach_first = True):
-    cmd_prefix = get_command_prefix(cluster_name, opts)
+    cmd_prefix = get_command_prefix(opts)
 
     # Get cluster ips
     print '[ Detaching and deleting cluster scratch disks ]'
@@ -585,7 +587,7 @@ def cleanup_scratch_disks(cluster_name, opts, detach_first = True):
 
 
 def attach_persistent_scratch_disks(cluster_name, opts, master_node, slave_nodes):
-    cmd_prefix = get_command_prefix(cluster_name, opts)
+    cmd_prefix = get_command_prefix(opts)
 
     print '[ Adding new ' + opts.scratch_disk_size + ' drive of type "' + opts.scratch_disk_type + '" to each cluster node ]'
 
@@ -609,9 +611,10 @@ def attach_persistent_scratch_disks(cluster_name, opts, master_node, slave_nodes
     
 def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
     print '[ Installing software dependencies (this will take several minutes) ]'
+    command_prefix = get_command_prefix(opts)
 
     # Install the copy-dir script
-    run("gcloud compute copy-files " + SPARK_GCE_PATH + "/copy-dir " + cluster_name + "-master: --zone " + master_node['zone'])
+    run(command_prefix + " copy-files " + SPARK_GCE_PATH + "/copy-dir " + cluster_name + "-master: --zone " + master_node['zone'])
     cmds = ['mkdir -p $HOME/spark/bin && mkdir -p $HOME/spark/conf',
             'mv $HOME/copy-dir $HOME/spark/bin',
             'chmod 755 $HOME/spark/bin/copy-dir']
@@ -623,7 +626,7 @@ def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
     for slave in slave_nodes:
         slave_file.write(slave['host_name'] + '\n')
     slave_file.close()
-    run("gcloud compute copy-files " + slave_file.name + " " + cluster_name + "-master:spark/conf/slaves --zone " + master_node['zone'])
+    run(command_prefix + " copy-files " + slave_file.name + " " + cluster_name + "-master:spark/conf/slaves --zone " + master_node['zone'])
     os.unlink(slave_file.name)
 
     # Download Anaconda, and copy to slave nodes
@@ -649,6 +652,7 @@ def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
     run(cmds, parallelize = True)
 
 def install_spark(cluster_name, opts, master_node, slave_nodes):
+    command_prefix = get_command_prefix(opts)
     print '[ Installing Spark ]'
 
     # Install Spark and Scala
@@ -661,10 +665,10 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
     run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
 
     # Set up the spark-env.conf and spark-defaults.conf files
-    deploy_template(master_node, "spark/conf/spark-env.sh")
-    deploy_template(master_node, "spark/conf/core-site.xml")
-    deploy_template(master_node, "spark/conf/spark-defaults.conf")
-    deploy_template(master_node, "spark/setup-auth.sh")
+    deploy_template(opts, master_node, "spark/conf/spark-env.sh")
+    deploy_template(opts, master_node, "spark/conf/core-site.xml")
+    deploy_template(opts, master_node, "spark/conf/spark-defaults.conf")
+    deploy_template(opts, master_node, "spark/setup-auth.sh")
     cmds = ['echo \'export SPARK_HOME=\$HOME/spark\' >> $HOME/.bashrc',
             'echo \'export JAVA_HOME=/usr/lib/jvm/java-1.7.0-openjdk-amd64\' >> $HOME/.bashrc',
             '$HOME/spark/setup-auth.sh',
@@ -679,12 +683,12 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
     for slave in slave_nodes:
         slave_file.write(slave['host_name'] + '\n')
     slave_file.close()
-    cmds = [ "gcloud compute copy-files " + slave_file.name + " " + cluster_name + "-master:spark/conf/slaves --zone " + master_node['zone']]
+    cmds = [ command_prefix + " copy-files " + slave_file.name + " " + cluster_name + "-master:spark/conf/slaves --zone " + master_node['zone']]
     run(cmds)
     os.unlink(slave_file.name)
     
     # Install the copy-dir script
-    run("gcloud compute copy-files " + SPARK_GCE_PATH + "/copy-dir " + cluster_name + "-master:spark/bin --zone " + master_node['zone'])
+    run(command_prefix + " copy-files " + SPARK_GCE_PATH + "/copy-dir " + cluster_name + "-master:spark/bin --zone " + master_node['zone'])
     
     # Copy spark to the slaves and create a symlink to $HOME/spark
     run(ssh_wrap(master_node, opts.identity_file, '$HOME/spark/bin/copy-dir $HOME/packages/spark-1.3.0-bin-cdh4'))
@@ -718,11 +722,11 @@ def configure_ganglia(cluster_name, opts, master_node, slave_nodes):
     
     run(ssh_wrap(master_node, opts.identity_file, "mkdir -p ganglia", group = True))
 
-    deploy_template(master_node, "ganglia/ports.conf")
-    deploy_template(master_node, "ganglia/ganglia.conf")
-    deploy_template(master_node, "ganglia/gmetad.conf")
-    deploy_template(master_node, "ganglia/gmond.conf")
-    deploy_template(master_node, "ganglia/000-default.conf")
+    deploy_template(opts, master_node, "ganglia/ports.conf")
+    deploy_template(opts, master_node, "ganglia/ganglia.conf")
+    deploy_template(opts, master_node, "ganglia/gmetad.conf")
+    deploy_template(opts, master_node, "ganglia/gmond.conf")
+    deploy_template(opts, master_node, "ganglia/000-default.conf")
     
     # Install gmetad and the ganglia web front-end on the master node
     cmds = [ 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -q -y ganglia-webfrontend gmetad ganglia-monitor',
@@ -809,12 +813,12 @@ def install_hadoop(cluster_name, opts, master_node, slave_nodes):
     run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
         
     # Set up Hadoop configuration files from the templates
-    deploy_template(master_node, "ephemeral-hdfs/conf/core-site.xml")
-    deploy_template(master_node, "ephemeral-hdfs/conf/hadoop-env.sh")
-    deploy_template(master_node, "ephemeral-hdfs/conf/hadoop-metrics2.properties")
-    deploy_template(master_node, "ephemeral-hdfs/conf/hdfs-site.xml")
-    deploy_template(master_node, "ephemeral-hdfs/conf/mapred-site.xml")
-    deploy_template(master_node, "ephemeral-hdfs/conf/masters")
+    deploy_template(opts, master_node, "ephemeral-hdfs/conf/core-site.xml")
+    deploy_template(opts, master_node, "ephemeral-hdfs/conf/hadoop-env.sh")
+    deploy_template(opts, master_node, "ephemeral-hdfs/conf/hadoop-metrics2.properties")
+    deploy_template(opts, master_node, "ephemeral-hdfs/conf/hdfs-site.xml")
+    deploy_template(opts, master_node, "ephemeral-hdfs/conf/mapred-site.xml")
+    deploy_template(opts, master_node, "ephemeral-hdfs/conf/masters")
 
     cmds = [
         'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/ephemeral-hdfs/conf/core-site.xml',
@@ -827,8 +831,8 @@ def install_hadoop(cluster_name, opts, master_node, slave_nodes):
     run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
 
     # Set up authentication for the Hadoop Google Storage adaptor
-    deploy_template(master_node, "ephemeral-hdfs/setup-auth.sh")
-    deploy_template(master_node, "ephemeral-hdfs/setup-slave.sh")
+    deploy_template(opts, master_node, "ephemeral-hdfs/setup-auth.sh")
+    deploy_template(opts, master_node, "ephemeral-hdfs/setup-slave.sh")
     run(ssh_wrap(master_node, opts.identity_file,'$HOME/ephemeral-hdfs/setup-auth.sh'))
 
     # Copy the hadoop directory from the master node to the slave nodes
