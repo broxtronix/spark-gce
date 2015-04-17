@@ -898,7 +898,7 @@ def parse_args():
         help="GCE zone to target when launching instances ( you can omit this argument if you set a default with \'gcloud config set compute/zone [zone-name]\'")
     parser.add_option("--verbose", type = int, default = 0,
                       help="Set debugging level (0 - minimal, 1 - some, 2 - a lot).")
-    parser.add_option("--ssh-port-forwarding", default=None,
+    parser.add_option("--ssh-tunnel", default=None,
                       help="Set up ssh port forwarding when you login to the cluster.  " +
                       "This provides a convenient alternative to connecting to iPython " +
                       "notebook over an open port using SSL.  You must supply an argument " +
