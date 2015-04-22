@@ -190,7 +190,9 @@ def deploy_template(opts, node, template_name):
     cmd = command_prefix + " copy-files " + SPARK_GCE_PATH + "/templates/" + template_name + " " + node['host_name'] + ":" + template_name + " --zone " + node['zone']
     if VERBOSE >= 1:
         print "  TEMPLATE: ", template_name
-        run(cmd)
+
+    # Run the command
+    run(cmd)
 
 # -------------------------------------------------------------------------------------
 
