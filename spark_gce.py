@@ -886,7 +886,7 @@ def parse_args():
         "--boot-disk-type", default="pd-standard",
         help="Boot disk type.  Run \'gcloud compute disk-types list\' to see your options.")
     parser.add_option(
-        "--scratch-disk-type", default="pd-ssd",
+        "--scratch-disk-type", default="pd-standard",
         help="Boot disk type.  Run \'gcloud compute disk-types list\' to see your options.")
     parser.add_option(
         "--boot-disk-size", default="50GB",
