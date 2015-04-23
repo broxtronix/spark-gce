@@ -49,10 +49,10 @@ gcloud config set compute/region <region>
 gcloud config set compute/zone <zone>
 ```
 
-Having done this, you should be able to start a new cluster with this succinct command
+Having done this, you should be able to create a new cluster with this succinct command
 
 ```
-spark-gce start <cluster_name> -s <num_slaves>
+spark-gce launch <cluster_name> -s <num_slaves>
 ```
 
 Once the cluster is up and running, you can ssh into it either using:
