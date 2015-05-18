@@ -30,6 +30,25 @@ if not os.path.exists(os.path.join(SPARK_GCE_PATH, "templates")):
     raise Exception("There was an error locating installation support files. Spark GCE is not installed properly.  Please re-install.")
 
 
+# Instance info lookup table
+#
+# This information is used to automatically set and tune various Spark
+# parameters based on the cluster instance type.
+instance_info = {
+    "n1-standard-4"  : { "num_cpus":  4, "gb_mem": 15,   "spark_master_memory": "10g" , "spark_slave_memory": "11g" },
+    "n1-standard-8"  : { "num_cpus":  8, "gb_mem": 30,   "spark_master_memory": "20g" , "spark_slave_memory": "25g" },
+    "n1-standard-16" : { "num_cpus": 16, "gb_mem": 60,   "spark_master_memory": "40g" , "spark_slave_memory": "50g" },
+    "n1-standard-32" : { "num_cpus": 32, "gb_mem": 120,  "spark_master_memory": "50g" , "spark_slave_memory": "95g" },
+    "n1-highmem-4"   : { "num_cpus":  4, "gb_mem": 26,   "spark_master_memory": "15g" , "spark_slave_memory": "22g" },
+    "n1-highmem-8"   : { "num_cpus":  8, "gb_mem": 52,   "spark_master_memory": "30g" , "spark_slave_memory": "45g" },
+    "n1-highmem-16"  : { "num_cpus": 16, "gb_mem": 104,  "spark_master_memory": "50g" , "spark_slave_memory": "90g" },
+    "n1-highmem-32"  : { "num_cpus": 32, "gb_mem": 208,  "spark_master_memory": "80g" , "spark_slave_memory": "190g" },
+    "n1-highcpu-8"   : { "num_cpus":  8, "gb_mem": 7.2,  "spark_master_memory": "4g"  , "spark_slave_memory": "6g"  },
+    "n1-highcpu-16"  : { "num_cpus": 16, "gb_mem": 14.4, "spark_master_memory": "10g" , "spark_slave_memory": "11g" },
+    "n1-highcpu-32"  : { "num_cpus": 32, "gb_mem": 28.8, "spark_master_memory": "20g" , "spark_slave_memory": "25g" },
+}
+
+
 # ----------------------------------------------------------------------------------------
 # run() can be used to execute multiple command line processes simultaneously.
 # This is particularly useful for long-running, network-bound processes like
@@ -360,7 +379,7 @@ def launch_cluster(cluster_name, opts):
     cmds = []
     cmds.append( command_prefix + ' instances create "' + cluster_name + '-master" --machine-type "' + opts.master_instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.full_control" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-md" --metadata startup-script-url=http://storage.googleapis.com/spark-gce/growroot.sh' + zone_str )
     for i in xrange(opts.slaves):
-        cmds.append( command_prefix + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.full_control" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd" --metadata startup-script-url=http://storage.googleapis.com/spark-gce/growroot.sh' + zone_str )
+        cmds.append( command_prefix + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.slave_instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.full_control" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd" --metadata startup-script-url=http://storage.googleapis.com/spark-gce/growroot.sh' + zone_str )
 
     print '[ Launching nodes ]'
     run(cmds, parallelize = True)
@@ -674,8 +693,20 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
     cmds = ['echo \'export SPARK_HOME=\$HOME/spark\' >> $HOME/.bashrc',
             'echo \'export JAVA_HOME=/usr/lib/jvm/java-1.7.0-openjdk-amd64\' >> $HOME/.bashrc',
             '$HOME/spark/setup-auth.sh',
+
+            # spark-env.conf
             'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/spark/conf/spark-env.sh',
-            'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/spark/conf/core-site.xml'
+            'sed -i "s/{{worker_cores}}/' + str(instance_info[opts.slave_instance_type]["num_cpus"]) + '/g" $HOME/spark/conf/spark-env.sh',
+            'sed -i "s/{{spark_master_memory}}/' + instance_info[opts.master_instance_type]["spark_master_memory"] + '/g" $HOME/spark/conf/spark-env.sh',
+            'sed -i "s/{{spark_slave_memory}}/' + instance_info[opts.slave_instance_type]["spark_slave_memory"] + '/g" $HOME/spark/conf/spark-env.sh',
+
+            # core-site.xml
+            'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/spark/conf/core-site.xml',
+
+            # spark-defaults.conf
+            'sed -i "s/{{spark_master_memory}}/' + instance_info[opts.master_instance_type]["spark_master_memory"] + '/g" $HOME/spark/conf/spark-defaults.conf',
+            'sed -i "s/{{spark_slave_memory}}/' + instance_info[opts.slave_instance_type]["spark_slave_memory"] + '/g" $HOME/spark/conf/spark-defaults.conf',
+
     ]
     run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
 
@@ -879,7 +910,7 @@ def parse_args():
         "-i", "--identity-file", default = os.path.join(homedir, ".ssh", "google_compute_engine"),
         help="SSH private key file to use for logging into instances")
     parser.add_option(
-        "-t", "--instance-type", default="n1-highmem-16",
+        "-t", "--slave-instance-type", default="n1-highmem-16",
         help="Type of instance to launch (default: n1-highmem-16).")
     parser.add_option(
         "-m", "--master-instance-type", default="n1-highmem-16",
@@ -913,6 +944,16 @@ def parse_args():
     (opts, args) = parser.parse_args()
     if (len(args) < 2) or (len(args) > 3):
         parser.print_help()
+        sys.exit(1)
+
+    if not opts.master_instance_type in instance_info.keys():
+        print 'Error: the selected master_instance_type was not recognized, or was an instance type without enough RAM to be a Spark master node.  Select from the list of instances below:'
+        print instance_info.keys()
+        sys.exit(1)
+
+    if not opts.slave_instance_type in instance_info.keys():
+        print 'Error: the selected slave_instance_type was not recognized, or was an instance type without enough RAM to be a Spark slave node.  Select from the list of instances below:'
+        print instance_info.keys()
         sys.exit(1)
 
     global VERBOSE

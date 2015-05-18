@@ -54,9 +54,9 @@ export SPARK_SUBMIT_LIBRARY_PATH="$SPARK_SUBMIT_LIBRARY_PATH:$HOME/ephemeral-hdf
 export SPARK_SUBMIT_CLASSPATH="$SPARK_CLASSPATH:$SPARK_SUBMIT_CLASSPATH:$HOME/ephemeral-hdfs/conf"
 
 export SPARK_WORKER_INSTANCES=1
-export SPARK_WORKER_CORES=16
-export SPARK_DRIVER_MEMORY=30g
-export SPARK_WORKER_MEMORY=90g
+export SPARK_WORKER_CORES={{worker_cores}}
+export SPARK_DRIVER_MEMORY={{spark_master_memory}}
+export SPARK_WORKER_MEMORY={{spark_slave_memory}}
 
 export SPARK_PUBLIC_DNS=`wget -q -O - http://icanhazip.com/`
 export SPARK_MASTER_IP={{active_master}}
