@@ -202,11 +202,11 @@ def ssh_wrap(host, identity_file, cmds, group = False):
         result.append( "ssh -i " + identity_file + " -o ConnectTimeout=900 -o \"BatchMode yes\" -o ServerAliveInterval=60 -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no -o LogLevel=quiet " + username + "@" + host['external_ip'] + " '" + cmd + "'" )
     return result
 
-def deploy_template(opts, node, template_name):
+def deploy_template(opts, node, template_name, root = "/opt"):
     global VERBOSE
     command_prefix = get_command_prefix(opts)
 
-    cmd = command_prefix + " copy-files " + SPARK_GCE_PATH + "/templates/" + template_name + " " + node['host_name'] + ":" + template_name + " --zone " + node['zone']
+    cmd = command_prefix + " copy-files " + SPARK_GCE_PATH + "/templates/" + template_name + " " + node['host_name'] + ":" + root + "/" + template_name + " --zone " + node['zone']
     if VERBOSE >= 1:
         print "  TEMPLATE: ", template_name
 
@@ -575,7 +575,6 @@ def deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes):
 
 
 def attach_local_ssd(cluster_name, opts, master_node, slave_nodes):
-
     print '[ Attaching 350GB NVME SSD drive to each node under /mnt ]'
 
     cmds = [ 'if [ ! -d /mnt ]; then sudo mkdir /mnt; fi',
@@ -634,11 +633,15 @@ def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
     print '[ Installing software dependencies (this will take several minutes) ]'
     command_prefix = get_command_prefix(opts)
 
+    # Create a user-writable /opt directory on all nodes.
+    cmds = [ ssh_wrap(slave, opts.identity_file, "sudo mkdir -p /opt && sudo chown $USER.$USER /opt", group = True) for slave in [master_node] + slave_nodes ]
+    run(cmds, parallelize = True)
+    
     # Install the copy-dir script
     run(command_prefix + " copy-files " + SPARK_GCE_PATH + "/copy-dir " + cluster_name + "-master: --zone " + master_node['zone'])
-    cmds = ['mkdir -p $HOME/spark/bin && mkdir -p $HOME/spark/conf',
-            'mv $HOME/copy-dir $HOME/spark/bin',
-            'chmod 755 $HOME/spark/bin/copy-dir']
+    cmds = ['mkdir -p /opt/spark/bin && mkdir -p /opt/spark/conf',
+            'mv $HOME/copy-dir /opt/spark/bin',
+            'chmod 755 /opt/spark/bin/copy-dir']
     run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
 
     # Create a file containing the list of all current slave nodes 
@@ -647,12 +650,14 @@ def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
     for slave in slave_nodes:
         slave_file.write(slave['host_name'] + '\n')
     slave_file.close()
-    run(command_prefix + " copy-files " + slave_file.name + " " + cluster_name + "-master:spark/conf/slaves --zone " + master_node['zone'])
+    run(command_prefix + " copy-files " + slave_file.name + " " + cluster_name + "-master:slaves --zone " + master_node['zone'])
+    run(ssh_wrap(master_node, opts.identity_file, "mv slaves /opt/spark/conf", group = True))
+    run(ssh_wrap(master_node, opts.identity_file, "chmod 644 /opt/spark/conf/slaves", group = True))
     os.unlink(slave_file.name)
 
     # Download Anaconda, and copy to slave nodes
     cmds = [ 'wget http://storage.googleapis.com/spark-gce/packages/Anaconda-2.1.0-Linux-x86_64.sh',
-             '$HOME/spark/bin/copy-dir Anaconda-2.1.0-Linux-x86_64.sh']
+             '/opt/spark/bin/copy-dir Anaconda-2.1.0-Linux-x86_64.sh']
     run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
         
     cmds = [ 'sudo apt-get update -q -y',
@@ -664,10 +669,10 @@ def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
              'sudo apt-get install -q -y R-base realpath',  # Realpath is used by R to find java installations
 
              # PySpark dependencies
-             'rm -rf $HOME/anaconda && bash Anaconda-2.1.0-Linux-x86_64.sh -b && rm Anaconda-2.1.0-Linux-x86_64.sh',
+             'rm -rf /opt/anaconda && sudo bash Anaconda-2.1.0-Linux-x86_64.sh -b -p /opt/anaconda && rm Anaconda-2.1.0-Linux-x86_64.sh',
 
              # Set system path
-             'echo \'export PATH=\$HOME/anaconda/bin:\$PATH:\$HOME/spark/bin:\$HOME/ephemeral-hdfs/bin\' >> $HOME/.bashrc'
+             'sudo sh -c \"echo \'export PATH=/opt/anaconda/bin:\$PATH:/opt/spark/bin:/opt/ephemeral-hdfs/bin\' >> /etc/bash.bashrc\"'
          ]
     cmds = [ ssh_wrap(node, opts.identity_file, cmds, group = True) for node in [master_node] + slave_nodes ]
     run(cmds, parallelize = True)
@@ -677,12 +682,12 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
     print '[ Installing Spark ]'
 
     # Install Spark and Scala
-    cmds = [ 'mkdir -p $HOME/packages',
-             'cd $HOME/packages && wget http://mirror.cc.columbia.edu/pub/software/apache/spark/spark-1.3.0/spark-1.3.0-bin-cdh4.tgz',
-             'cd $HOME/packages && tar xvf spark-1.3.0-bin-cdh4.tgz && rm spark-1.3.0-bin-cdh4.tgz',
-             'rm -rf $HOME/spark && ln -s $HOME/packages/spark-1.3.0-bin-cdh4 $HOME/spark',
-             'cd $HOME/packages && wget http://downloads.typesafe.com/scala/2.11.6/scala-2.11.6.tgz',
-             'cd $HOME/packages && tar xvzf scala-2.11.6.tgz && rm -rf scala-2.11.6.tgz']
+    cmds = [ 'wget http://mirror.cc.columbia.edu/pub/software/apache/spark/spark-1.3.0/spark-1.3.0-bin-cdh4.tgz',
+             'tar xvf spark-1.3.0-bin-cdh4.tgz && rm spark-1.3.0-bin-cdh4.tgz',
+             'rm -rf /opt/spark && mv $HOME/spark-1.3.0-bin-cdh4 /opt/spark',
+             'wget http://downloads.typesafe.com/scala/2.11.6/scala-2.11.6.tgz',
+             'tar xvzf scala-2.11.6.tgz && rm -rf scala-2.11.6.tgz',
+             'rm -rf /opt/scala && mv $HOME/scala-2.11.6 /opt/scala']
     run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
 
     # Set up the spark-env.conf and spark-defaults.conf files
@@ -690,22 +695,22 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
     deploy_template(opts, master_node, "spark/conf/core-site.xml")
     deploy_template(opts, master_node, "spark/conf/spark-defaults.conf")
     deploy_template(opts, master_node, "spark/setup-auth.sh")
-    cmds = ['echo \'export SPARK_HOME=\$HOME/spark\' >> $HOME/.bashrc',
+    cmds = ['echo \'export SPARK_HOME=/opt/spark\' >> $HOME/.bashrc',
             'echo \'export JAVA_HOME=/usr/lib/jvm/java-1.7.0-openjdk-amd64\' >> $HOME/.bashrc',
-            '$HOME/spark/setup-auth.sh',
+            '/opt/spark/setup-auth.sh',
 
             # spark-env.conf
-            'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/spark/conf/spark-env.sh',
-            'sed -i "s/{{worker_cores}}/' + str(instance_info[opts.slave_instance_type]["num_cpus"]) + '/g" $HOME/spark/conf/spark-env.sh',
-            'sed -i "s/{{spark_master_memory}}/' + instance_info[opts.master_instance_type]["spark_master_memory"] + '/g" $HOME/spark/conf/spark-env.sh',
-            'sed -i "s/{{spark_slave_memory}}/' + instance_info[opts.slave_instance_type]["spark_slave_memory"] + '/g" $HOME/spark/conf/spark-env.sh',
+            'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" /opt/spark/conf/spark-env.sh',
+            'sed -i "s/{{worker_cores}}/' + str(instance_info[opts.slave_instance_type]["num_cpus"]) + '/g" /opt/spark/conf/spark-env.sh',
+            'sed -i "s/{{spark_master_memory}}/' + instance_info[opts.master_instance_type]["spark_master_memory"] + '/g" /opt/spark/conf/spark-env.sh',
+            'sed -i "s/{{spark_slave_memory}}/' + instance_info[opts.slave_instance_type]["spark_slave_memory"] + '/g" /opt/spark/conf/spark-env.sh',
 
             # core-site.xml
-            'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/spark/conf/core-site.xml',
+            'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" /opt/spark/conf/core-site.xml',
 
             # spark-defaults.conf
-            'sed -i "s/{{spark_master_memory}}/' + instance_info[opts.master_instance_type]["spark_master_memory"] + '/g" $HOME/spark/conf/spark-defaults.conf',
-            'sed -i "s/{{spark_slave_memory}}/' + instance_info[opts.slave_instance_type]["spark_slave_memory"] + '/g" $HOME/spark/conf/spark-defaults.conf',
+            'sed -i "s/{{spark_master_memory}}/' + instance_info[opts.master_instance_type]["spark_master_memory"] + '/g" /opt/spark/conf/spark-defaults.conf',
+            'sed -i "s/{{spark_slave_memory}}/' + instance_info[opts.slave_instance_type]["spark_slave_memory"] + '/g" /opt/spark/conf/spark-defaults.conf',
 
     ]
     run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
@@ -716,18 +721,17 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
     for slave in slave_nodes:
         slave_file.write(slave['host_name'] + '\n')
     slave_file.close()
-    cmds = [ command_prefix + " copy-files " + slave_file.name + " " + cluster_name + "-master:spark/conf/slaves --zone " + master_node['zone']]
+    cmds = [ command_prefix + " copy-files " + slave_file.name + " " + cluster_name + "-master:/opt/spark/conf/slaves --zone " + master_node['zone']]
     run(cmds)
     os.unlink(slave_file.name)
     
     # Install the copy-dir script
-    run(command_prefix + " copy-files " + SPARK_GCE_PATH + "/copy-dir " + cluster_name + "-master:spark/bin --zone " + master_node['zone'])
+    run(command_prefix + " copy-files " + SPARK_GCE_PATH + "/copy-dir " + cluster_name + "-master:/opt/spark/bin --zone " + master_node['zone'])
     
     # Copy spark to the slaves and create a symlink to $HOME/spark
-    run(ssh_wrap(master_node, opts.identity_file, '$HOME/spark/bin/copy-dir $HOME/packages/spark-1.3.0-bin-cdh4'))
-    run([ ssh_wrap(slave, opts.identity_file, 'rm -f $HOME/spark && ln -s $HOME/packages/spark-1.3.0-bin-cdh4 $HOME/spark') for slave in slave_nodes ], parallelize = True)
+    run(ssh_wrap(master_node, opts.identity_file, '/opt/spark/bin/copy-dir /opt/spark'))
 
-
+    
 def configure_and_start_spark(cluster_name, opts, master_node, slave_nodes):
     print '[ Configuring Spark ]'
 
@@ -747,7 +751,7 @@ def configure_and_start_spark(cluster_name, opts, master_node, slave_nodes):
 
     # Start Spark
     print '[ Starting Spark ]'
-    run(ssh_wrap(master_node, opts.identity_file, '$HOME/spark/sbin/start-all.sh') )
+    run(ssh_wrap(master_node, opts.identity_file, '/opt/spark/sbin/start-all.sh') )
 
     
 def configure_ganglia(cluster_name, opts, master_node, slave_nodes):
@@ -792,7 +796,7 @@ def configure_ganglia(cluster_name, opts, master_node, slave_nodes):
     time.sleep(2)
 
     # Install and configure gmond everywhere
-    run(ssh_wrap(master_node, opts.identity_file, "$HOME/spark/bin/copy-dir $HOME/ganglia", group = True))
+    run(ssh_wrap(master_node, opts.identity_file, "/opt/spark/bin/copy-dir $HOME/ganglia", group = True))
     cmds = [ 'sudo apt-get install -q -y ganglia-monitor gmetad',
              'sudo rm -rf /var/lib/ganglia/rrds/* && sudo rm -rf /mnt/ganglia/rrds/*',
              'sudo mkdir -p /mnt/ganglia/rrds',
@@ -807,11 +811,13 @@ def configure_ganglia(cluster_name, opts, master_node, slave_nodes):
     cmds = [ssh_wrap(node, opts.identity_file, cmds, group = True) for node in slave_nodes]
     run(cmds, parallelize = True)
 
+    run(ssh_wrap(master_node, opts.identity_file, 'sudo rm -rf $HOME/ganglia'))
+        
 
 def install_hadoop(cluster_name, opts, master_node, slave_nodes):
 
     print '[ Installing hadoop (this will take several minutes) ]'
-
+    
     # Download pre-built Hadoop Native libraries
     cmds = ['sudo apt-get install -q -y protobuf-compiler cmake libssl-dev maven pkg-config libsnappy-dev',
             'wget http://storage.googleapis.com/spark-gce/packages/hadoop-native.tgz',
@@ -832,16 +838,17 @@ def install_hadoop(cluster_name, opts, master_node, slave_nodes):
     
     # Install Hadoop 2.0
     cmds = ['wget http://s3.amazonaws.com/spark-related-packages/hadoop-2.0.0-cdh4.2.0.tar.gz',
-        'tar xvzf hadoop-*.tar.gz > /tmp/spark-ec2_hadoop.log',
-        'rm hadoop-*.tar.gz',
-        'rm -rf ephemeral-hdfs && mv hadoop-2.0.0-cdh4.2.0 ephemeral-hdfs',
-        'rm -rf $HOME/ephemeral-hdfs/etc/hadoop/',   # Use a single conf directory
-        'mkdir -p $HOME/ephemeral-hdfs/conf && ln -s $HOME/ephemeral-hdfs/conf $HOME/ephemeral-hdfs/etc/hadoop',
-        'cp $HOME/hadoop-native/* $HOME/ephemeral-hdfs/lib/native/',
-        'cp $HOME/spark/conf/slaves $HOME/ephemeral-hdfs/conf/',
+            'tar xvzf hadoop-*.tar.gz > /tmp/spark-ec2_hadoop.log',
+            'rm hadoop-*.tar.gz',
+            'rm -rf ephemeral-hdfs && mv hadoop-2.0.0-cdh4.2.0 /opt/ephemeral-hdfs',
+            'rm -rf /opt/ephemeral-hdfs/etc/hadoop/',   # Use a single conf directory
+            'mkdir -p /opt/ephemeral-hdfs/conf && ln -s /opt/ephemeral-hdfs/conf /opt/ephemeral-hdfs/etc/hadoop',
+            'cp $HOME/hadoop-native/* /opt/ephemeral-hdfs/lib/native/',
+            'rm -rf $HOME/hadoop-native',
+            'cp /opt/spark/conf/slaves /opt/ephemeral-hdfs/conf/',
 
         # Install the Google Storage adaptor
-        'cd $HOME/ephemeral-hdfs/share/hadoop/hdfs/lib && rm -f gcs-connector-latest-hadoop2.jar && wget https://storage.googleapis.com/hadoop-lib/gcs/gcs-connector-latest-hadoop2.jar',
+        'cd /opt/ephemeral-hdfs/share/hadoop/hdfs/lib && rm -f gcs-connector-latest-hadoop2.jar && wget https://storage.googleapis.com/hadoop-lib/gcs/gcs-connector-latest-hadoop2.jar',
     ]
     run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
         
@@ -854,37 +861,42 @@ def install_hadoop(cluster_name, opts, master_node, slave_nodes):
     deploy_template(opts, master_node, "ephemeral-hdfs/conf/masters")
 
     cmds = [
-        'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/ephemeral-hdfs/conf/core-site.xml',
-        'sed -i "s/{{java_home}}/\/usr\/lib\/jvm\/java-1.7.0-openjdk-amd64/g" $HOME/ephemeral-hdfs/conf/hadoop-env.sh',
-        'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/ephemeral-hdfs/conf/hadoop-metrics2.properties',
-        'sed -i "s/{{hdfs_data_dirs}}/\/mnt\/hadoop\/dfs\/data/g" $HOME/ephemeral-hdfs/conf/hdfs-site.xml',
-        'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/ephemeral-hdfs/conf/mapred-site.xml',
-        'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" $HOME/ephemeral-hdfs/conf/masters',
+        'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" /opt/ephemeral-hdfs/conf/core-site.xml',
+        'sed -i "s/{{java_home}}/\/usr\/lib\/jvm\/java-1.7.0-openjdk-amd64/g" /opt/ephemeral-hdfs/conf/hadoop-env.sh',
+        'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" /opt/ephemeral-hdfs/conf/hadoop-metrics2.properties',
+        'sed -i "s/{{hdfs_data_dirs}}/\/mnt\/hadoop\/dfs\/data/g" /opt/ephemeral-hdfs/conf/hdfs-site.xml',
+        'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" /opt/ephemeral-hdfs/conf/mapred-site.xml',
+        'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" /opt/ephemeral-hdfs/conf/masters',
     ]
     run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
 
     # Set up authentication for the Hadoop Google Storage adaptor
     deploy_template(opts, master_node, "ephemeral-hdfs/setup-auth.sh")
     deploy_template(opts, master_node, "ephemeral-hdfs/setup-slave.sh")
-    run(ssh_wrap(master_node, opts.identity_file,'$HOME/ephemeral-hdfs/setup-auth.sh'))
-
-    # Copy the hadoop directory from the master node to the slave nodes
-    run(ssh_wrap(master_node, opts.identity_file,'$HOME/spark/bin/copy-dir $HOME/ephemeral-hdfs'))
-
     
+    # Copy the hadoop directory from the master node to the slave nodes
+    run(ssh_wrap(master_node, opts.identity_file,'/opt/spark/bin/copy-dir /opt/ephemeral-hdfs'))
+
 def configure_and_start_hadoop(cluster_name, opts, master_node, slave_nodes):
 
     print '[ Configuring hadoop ]'
 
+    # Clean up old deployment
+    cmds = [ ssh_wrap(node, opts.identity_file,'rm -rf /mnt/ephemeral-hdfs') for node in [master_node] + slave_nodes ]
+    run(cmds, parallelize = True)
+
     # Set up the ephemeral HDFS directories
-    cmds = [ ssh_wrap(node, opts.identity_file,'$HOME/ephemeral-hdfs/setup-slave.sh') for node in [master_node] + slave_nodes ]
+    cmds = [ ssh_wrap(node, opts.identity_file,'/opt/ephemeral-hdfs/setup-auth.sh') for node in [master_node] + slave_nodes ]
+    run(cmds, parallelize = True)
+
+    cmds = [ ssh_wrap(node, opts.identity_file,'/opt/ephemeral-hdfs/setup-slave.sh') for node in [master_node] + slave_nodes ]
     run(cmds, parallelize = True)
 
     # Format the ephemeral HDFS
-    run(ssh_wrap(master_node, opts.identity_file,'$HOME/ephemeral-hdfs/bin/hadoop namenode -format'))
+    run(ssh_wrap(master_node, opts.identity_file,'/opt/ephemeral-hdfs/bin/hadoop namenode -format'))
 
     # Start Hadoop HDFS
-    run(ssh_wrap(master_node, opts.identity_file,'$HOME/ephemeral-hdfs/sbin/start-dfs.sh'))
+    run(ssh_wrap(master_node, opts.identity_file,'/opt/ephemeral-hdfs/sbin/start-dfs.sh'))
 
     
 def parse_args():

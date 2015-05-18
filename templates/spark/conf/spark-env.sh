@@ -50,8 +50,8 @@
 # - SPARK_NICENESS      The scheduling priority for daemons. (Default: 0)
 
 export SPARK_LOCAL_DIRS=/mnt/spark
-export SPARK_SUBMIT_LIBRARY_PATH="$SPARK_SUBMIT_LIBRARY_PATH:$HOME/ephemeral-hdfs/lib/native/"
-export SPARK_SUBMIT_CLASSPATH="$SPARK_CLASSPATH:$SPARK_SUBMIT_CLASSPATH:$HOME/ephemeral-hdfs/conf"
+export SPARK_SUBMIT_LIBRARY_PATH="$SPARK_SUBMIT_LIBRARY_PATH:/opt/ephemeral-hdfs/lib/native/"
+export SPARK_SUBMIT_CLASSPATH="$SPARK_CLASSPATH:$SPARK_SUBMIT_CLASSPATH:/opt/ephemeral-hdfs/conf"
 
 export SPARK_WORKER_INSTANCES=1
 export SPARK_WORKER_CORES={{worker_cores}}
@@ -62,10 +62,10 @@ export SPARK_PUBLIC_DNS=`wget -q -O - http://icanhazip.com/`
 export SPARK_MASTER_IP={{active_master}}
 export MASTER=spark://{{active_master}}:7077
 
-export HADOOP_HOME=$HOME/ephemeral-hdfs
+export HADOOP_HOME=/opt/ephemeral-hdfs
 
-export PYSPARK_DRIVER_PYTHON=$HOME/anaconda/bin/ipython
-export PYSPARK_PYTHON=$HOME/anaconda/bin/python
+export PYSPARK_DRIVER_PYTHON=/opt/anaconda/bin/ipython
+export PYSPARK_PYTHON=/opt/anaconda/bin/python
 
 # Set a high ulimit for large shuffles
 sudo sh -c "ulimit -n 1000000"

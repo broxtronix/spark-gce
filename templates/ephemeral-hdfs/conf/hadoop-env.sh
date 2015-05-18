@@ -11,8 +11,8 @@ export JAVA_HOME={{java_home}}
 # Extra Java CLASSPATH elements.  Optional.
 # export HADOOP_CLASSPATH=
 
-export HADOOP_HOME="/root/ephemeral-hdfs"
-export HADOOP_MAPREDUCE_HOME="/root/mapreduce"
+export HADOOP_HOME="/opt/ephemeral-hdfs"
+export HADOOP_MAPREDUCE_HOME="/opt/mapreduce"
 
 # The maximum amount of heap to use, in MB. Default is 1000.
 export HADOOP_HEAPSIZE=1000
@@ -40,10 +40,10 @@ export HADOOP_SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=5"
 export HADOOP_LOG_DIR=/mnt/ephemeral-hdfs/logs
 
 # File naming remote slave hosts.  $HADOOP_HOME/conf/slaves by default.
-# export HADOOP_SLAVES=${HADOOP_HOME}/conf/slaves
+export HADOOP_SLAVES=/opt/ephemeral-hdfs/conf/slaves
 
 # host:path where hadoop code should be rsync'd from.  Unset by default.
-# export HADOOP_MASTER=master:/home/$USER/src/hadoop
+#export HADOOP_MASTER=master:/home/$USER/src/hadoop
 
 # Seconds to sleep between slave commands.  Unset by default.  This
 # can be useful in large clusters, where, e.g., slave rsyncs can

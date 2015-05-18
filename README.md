@@ -18,6 +18,7 @@ performance enhancements and new additions:
 
 - Command syntax and option parsing now more closely follows the conventions used in the spark-ec2 script.
 - Script commands can now run parallel, so multiple operations can be performed simultaneously.  This greatly reduces the time it takes to launch, start, stop, and destroy clusters, especially when there are many slave nodes.
+- Spark, Hadoop, and other tools are installed under /opt, which allows multiple user accounts to access and run these tools from the same master node.
 - Addition of a 'start' and 'stop' command, which allow a cluster to be temporarily suspened while preserving the contents of its root disks (data on scratch disks does not persist).
 - Addition of a 'login' and 'mosh' command to log into a running cluster with ssh or [mosh](https://mosh.mit.edu/), respectively
 - Root drives on the instances can be larger that 10GB.  (The current default is 50GB)
