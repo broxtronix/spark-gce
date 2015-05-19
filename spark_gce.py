@@ -669,7 +669,7 @@ def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
              'sudo apt-get install -q -y R-base realpath',  # Realpath is used by R to find java installations
 
              # PySpark dependencies
-             'rm -rf /opt/anaconda && sudo bash Anaconda-2.1.0-Linux-x86_64.sh -b -p /opt/anaconda && rm Anaconda-2.1.0-Linux-x86_64.sh',
+             'rm -rf /opt/anaconda && bash Anaconda-2.1.0-Linux-x86_64.sh -b -p /opt/anaconda && rm Anaconda-2.1.0-Linux-x86_64.sh',
 
              # Set system path
              'sudo sh -c \"echo \'export PATH=/opt/anaconda/bin:\$PATH:/opt/spark/bin:/opt/ephemeral-hdfs/bin\' >> /etc/bash.bashrc\"'
