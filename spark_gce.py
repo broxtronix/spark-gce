@@ -757,7 +757,7 @@ def configure_and_start_spark(cluster_name, opts, master_node, slave_nodes):
 def configure_ganglia(cluster_name, opts, master_node, slave_nodes):
     print '[ Configuring Ganglia ]'
     
-    run(ssh_wrap(master_node, opts.identity_file, "mkdir -p ganglia", group = True))
+    run(ssh_wrap(master_node, opts.identity_file, "mkdir -p /opt/ganglia", group = True))
 
     deploy_template(opts, master_node, "ganglia/ports.conf")
     deploy_template(opts, master_node, "ganglia/ganglia.conf")
@@ -767,9 +767,9 @@ def configure_ganglia(cluster_name, opts, master_node, slave_nodes):
     
     # Install gmetad and the ganglia web front-end on the master node
     cmds = [ 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -q -y ganglia-webfrontend gmetad ganglia-monitor',
-             'sudo cp $HOME/ganglia/ports.conf /etc/apache2/',
-             'sudo cp $HOME/ganglia/000-default.conf /etc/apache2/sites-enabled/',
-             'sudo cp $HOME/ganglia/ganglia.conf /etc/apache2/sites-enabled/'
+             'sudo cp /opt/ganglia/ports.conf /etc/apache2/',
+             'sudo cp /opt/ganglia/000-default.conf /etc/apache2/sites-enabled/',
+             'sudo cp /opt/ganglia/ganglia.conf /etc/apache2/sites-enabled/'
     ]
     run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
     
@@ -783,10 +783,10 @@ def configure_ganglia(cluster_name, opts, master_node, slave_nodes):
     run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
 
     # Configure gmond and gmetad on the master node
-    cmds = ['sed -i -e  "s/{{master-node}}/' + cluster_name + '-master/g" $HOME/ganglia/gmetad.conf',
-            'sudo cp $HOME/ganglia/gmetad.conf /etc/ganglia/',
-            'sed -i -e  "s/{{master-node}}/' + cluster_name + '-master/g" $HOME/ganglia/gmond.conf', 
-            'sudo cp $HOME/ganglia/gmond.conf /etc/ganglia/',
+    cmds = ['sed -i -e  "s/{{master-node}}/' + cluster_name + '-master/g" /opt/ganglia/gmetad.conf',
+            'sudo cp /opt/ganglia/gmetad.conf /etc/ganglia/',
+            'sed -i -e  "s/{{master-node}}/' + cluster_name + '-master/g" /opt/ganglia/gmond.conf', 
+            'sudo cp /opt/ganglia/gmond.conf /etc/ganglia/',
             'sudo service gmetad restart && sudo service ganglia-monitor restart && sudo service apache2 restart'
     ]
     run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
@@ -796,7 +796,7 @@ def configure_ganglia(cluster_name, opts, master_node, slave_nodes):
     time.sleep(2)
 
     # Install and configure gmond everywhere
-    run(ssh_wrap(master_node, opts.identity_file, "/opt/spark/bin/copy-dir $HOME/ganglia", group = True))
+    run(ssh_wrap(master_node, opts.identity_file, "/opt/spark/bin/copy-dir /opt/ganglia", group = True))
     cmds = [ 'sudo apt-get install -q -y ganglia-monitor gmetad',
              'sudo rm -rf /var/lib/ganglia/rrds/* && sudo rm -rf /mnt/ganglia/rrds/*',
              'sudo mkdir -p /mnt/ganglia/rrds',
@@ -804,15 +804,12 @@ def configure_ganglia(cluster_name, opts, master_node, slave_nodes):
              'sudo rm -rf /var/lib/ganglia/rrds',
              'sudo ln -s /mnt/ganglia/rrds /var/lib/ganglia/rrds',
 
-             'sudo cp $HOME/ganglia/gmond.conf /etc/ganglia/',
-             'sudo cp $HOME/ganglia/gmetad.conf /etc/ganglia/',
-             'sudo rm -rf $HOME/ganglia',
+             'sudo cp /opt/ganglia/gmond.conf /etc/ganglia/',
+             'sudo cp /opt/ganglia/gmetad.conf /etc/ganglia/',
              'sudo service ganglia-monitor restart']
     cmds = [ssh_wrap(node, opts.identity_file, cmds, group = True) for node in slave_nodes]
     run(cmds, parallelize = True)
 
-    run(ssh_wrap(master_node, opts.identity_file, 'sudo rm -rf $HOME/ganglia'))
-        
 
 def install_hadoop(cluster_name, opts, master_node, slave_nodes):
 
@@ -927,6 +924,11 @@ def parse_args():
     parser.add_option(
         "-m", "--master-instance-type", default="n1-highmem-16",
         help="Master instance type (default: n1-highmem-16)")
+    # This option is not yet fully implemented -broxton
+    #
+    #    parser.add_argument("--preemptible",
+    #                        action="store_true", dest="preemptible", default=False,
+    #                        help="Mark slave instances as preemtible, which saves as much as 70% on their cost, but limits their uptime to 24h and means that they could be terminated at any time.  See Google Cloud Computing docs for more information.")
     parser.add_option(
         "--boot-disk-type", default="pd-standard",
         help="Boot disk type.  Run \'gcloud compute disk-types list\' to see your options.")
