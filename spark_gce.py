@@ -1015,8 +1015,7 @@ def ssh_cluster(cluster_name, opts):
         print ("\nSSH port forwarding requested.  Remote port " + ssh_ports[1] +
                " will be accessible at http://localhost:" + ssh_ports[0] + '\n')
         try:
-            cmd = ('ssh -i ' + opts.identity_file + ' -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no -L ' +
-                   ssh_ports[0] + ':127.0.0.1:' + ssh_ports[1] + ' -o ExitOnForwardFailure=yes ' + str(master_node['external_ip']))
+            cmd = 'gcloud compute ssh ' + master_node['host_name'] + ' --ssh-flag="-L 8890:127.0.0.1:8888"'
             subprocess.check_call(shlex.split(cmd))
         except subprocess.CalledProcessError:
             print "\nERROR: Could not establish ssh connection with port forwarding."
@@ -1025,7 +1024,8 @@ def ssh_cluster(cluster_name, opts):
             sys.exit(1)
 
     else:
-        cmd = 'ssh -i ' + opts.identity_file + ' -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no ' + str(master_node['external_ip'])
+        print master_node['host_name']
+        cmd = 'gcloud compute ssh ' + master_node['host_name']
         subprocess.check_call(shlex.split(cmd))
 
 def sshfs_cluster(cluster_name, opts, optional_arg):
