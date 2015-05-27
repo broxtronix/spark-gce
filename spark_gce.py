@@ -21,6 +21,7 @@ import json
 #
 # We use just a few of these to keep the code below clean and simple
 VERBOSE = 0
+COMMAND_PREFIX = None
 
 # Determine the path of the spark_gce.py file. We assume that all of the
 # templates and auxillary shell scripts are located here as well.
@@ -70,7 +71,8 @@ def run_subprocess(cmds, result_queue):
 
     # Execute commands in serial
     for cmd in cmds:
-
+        if VERBOSE >= 3:
+            print "[CMD] " + cmd
         child = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         stdout = child.communicate()[0]
         return_code = child.returncode
@@ -93,8 +95,6 @@ def run(cmds, parallelize = False, terminate_on_failure = True):
     serial within parallel threads.  (i.e. parallelism on the outer list)
 
     """
-    global VERBOSE
-
     import multiprocessing
     manager = multiprocessing.Manager()
     result_queue = manager.Queue()
@@ -114,7 +114,7 @@ def run(cmds, parallelize = False, terminate_on_failure = True):
     # and start to allow some commands to finish before starting others).
     num_threads = min(len(cmds), 64)
         
-    # For debugging purposes (if VERBOSE is True), print the commands we are
+    # For debugging purposes (if VERBOSE is >= 2), print the commands we are
     # about to execute.
     if VERBOSE >= 2:
         if isinstance(cmds[0], list):
@@ -178,8 +178,7 @@ def ssh_wrap(host, identity_file, cmds, group = False):
     of commands will be combined via the && shell operator and sent in a single
     ssh command.
     '''
-    global VERBOSE
-
+    
     if not isinstance(cmds, list):
         cmds = [ cmds ]
 
@@ -198,15 +197,12 @@ def ssh_wrap(host, identity_file, cmds, group = False):
         if host['external_ip'] is None:
             print "Error: attempting to ssh into machine instance \"%s\" without a public IP address.  Exiting." % (host["host_name"])
             sys.exit(1)
-            
-        result.append( "ssh -i " + identity_file + " -o ConnectTimeout=900 -o \"BatchMode yes\" -o ServerAliveInterval=60 -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no -o LogLevel=quiet " + username + "@" + host['external_ip'] + " '" + cmd + "'" )
+        result.append( COMMAND_PREFIX + ' ssh --ssh-flag="-o ConnectTimeout=900" --ssh-flag="-o BatchMode=yes" --ssh-flag="-o ServerAliveInterval=60" --ssh-flag="-o UserKnownHostsFile=/dev/null" --ssh-flag="-o CheckHostIP=no" --ssh-flag="-o StrictHostKeyChecking=no" --ssh-flag="-o LogLevel=quiet" ' + host['host_name'] + ' --command \'' + cmd + '\'')
     return result
 
 def deploy_template(opts, node, template_name, root = "/opt"):
-    global VERBOSE
-    command_prefix = get_command_prefix(opts)
 
-    cmd = command_prefix + " copy-files " + SPARK_GCE_PATH + "/templates/" + template_name + " " + node['host_name'] + ":" + root + "/" + template_name + " --zone " + node['zone']
+    cmd = COMMAND_PREFIX + " copy-files " + SPARK_GCE_PATH + "/templates/" + template_name + " " + node['host_name'] + ":" + root + "/" + template_name + " --zone " + node['zone']
     if VERBOSE >= 1:
         print "  TEMPLATE: ", template_name
 
@@ -222,8 +218,6 @@ def get_command_prefix(opts):
     return command_prefix
 
 def check_gcloud(cluster_name, opts):
-    global VERBOSE
-    
     cmd = "gcloud info"
     try:
         output = subprocess.check_output(cmd, shell=True)
@@ -272,9 +266,8 @@ def wait_for_cluster(cluster_name, opts, retry_delay = 10, num_retries = 12):
             sys.exit(1)
 
 def get_cluster_info(cluster_name, opts):
-    command_prefix = get_command_prefix(opts)
         
-    command = command_prefix + ' instances list --format json'
+    command = COMMAND_PREFIX + ' instances list --format json'
     try:
         output = subprocess.check_output(command, shell=True)
     except subprocess.CalledProcessError:
@@ -305,9 +298,8 @@ def get_cluster_info(cluster_name, opts):
     return (master_node, slave_nodes)
 
 def get_cluster_scratch_disks(cluster_name, opts):
-    command_prefix = get_command_prefix(opts)
     
-    command = command_prefix + ' disks list --format json'
+    command = COMMAND_PREFIX + ' disks list --format json'
     try:
         output = subprocess.check_output(command, shell=True)
     except subprocess.CalledProcessError:
@@ -331,29 +323,26 @@ def get_cluster_scratch_disks(cluster_name, opts):
 # -------------------------------------------------------------------------------------
 
 def setup_network(cluster_name, opts):
-
     print '[ Setting up Network & Firewall Entries ]'
-    command_prefix = get_command_prefix(opts)
     cmds = []
 
-    cmds.append( command_prefix + ' networks create "' + cluster_name + '-network" --range "10.240.0.0/16"' )
+    cmds.append( COMMAND_PREFIX + ' networks create "' + cluster_name + '-network" --range "10.240.0.0/16"' )
     
     # Uncomment the above and comment the below section if you don't want to open all ports for public.
-    # cmds.append( command_prefix + ' compute firewall-rules delete ' + cluster_name + '-internal' )
-    cmds.append( command_prefix + ' firewall-rules create ' + cluster_name + '-internal --network ' + cluster_name + '-network --allow tcp udp icmp' )
-    cmds.append( command_prefix + ' firewall-rules create ' + cluster_name + '-spark-external --network ' + cluster_name + '-network --allow tcp:8080 tcp:4040 tcp:5080' )
+    # cmds.append( COMMAND_PREFIX + ' compute firewall-rules delete ' + cluster_name + '-internal' )
+    cmds.append( COMMAND_PREFIX + ' firewall-rules create ' + cluster_name + '-internal --network ' + cluster_name + '-network --allow tcp udp icmp' )
+    cmds.append( COMMAND_PREFIX + ' firewall-rules create ' + cluster_name + '-spark-external --network ' + cluster_name + '-network --allow tcp:8080 tcp:4040 tcp:5080' )
     run(cmds)
 
 def delete_network(cluster_name, opts):
     print '[ Deleting Network & Firewall Entries ]'
-    command_prefix = get_command_prefix(opts)
     cmds = []
 
     # Uncomment the above and comment the below section if you don't want to open all ports for public.
-    # cmds.append( command_prefix + ' compute firewall-rules delete ' + cluster_name + '-internal --quiet' )
-    cmds.append(  command_prefix + ' firewall-rules delete ' + cluster_name + '-internal --quiet' )
-    cmds.append(  command_prefix + ' firewall-rules delete ' + cluster_name + '-spark-external --quiet' )
-    cmds.append( command_prefix + ' networks delete "' + cluster_name + '-network" --quiet' )
+    # cmds.append( COMMAND_PREFIX + ' compute firewall-rules delete ' + cluster_name + '-internal --quiet' )
+    cmds.append(  COMMAND_PREFIX + ' firewall-rules delete ' + cluster_name + '-internal --quiet' )
+    cmds.append(  COMMAND_PREFIX + ' firewall-rules delete ' + cluster_name + '-spark-external --quiet' )
+    cmds.append( COMMAND_PREFIX + ' networks delete "' + cluster_name + '-network" --quiet' )
     run(cmds)
 
 # -------------------------------------------------------------------------------------
@@ -365,7 +354,6 @@ def launch_cluster(cluster_name, opts):
     Create a new cluster. 
     """
     print '[ Launching cluster: %s ]' % cluster_name
-    command_prefix = get_command_prefix(opts)
 
     if opts.zone:
         zone_str = ' --zone ' + opts.zone
@@ -377,9 +365,9 @@ def launch_cluster(cluster_name, opts):
  
     # Start master nodes & slave nodes
     cmds = []
-    cmds.append( command_prefix + ' instances create "' + cluster_name + '-master" --machine-type "' + opts.master_instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.full_control" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-md" --metadata startup-script-url=http://storage.googleapis.com/spark-gce/growroot.sh' + zone_str )
+    cmds.append( COMMAND_PREFIX + ' instances create "' + cluster_name + '-master" --machine-type "' + opts.master_instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.full_control" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-md" --metadata startup-script-url=http://storage.googleapis.com/spark-gce/growroot.sh' + zone_str )
     for i in xrange(opts.slaves):
-        cmds.append( command_prefix + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.slave_instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.full_control" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd" --metadata startup-script-url=http://storage.googleapis.com/spark-gce/growroot.sh' + zone_str )
+        cmds.append( COMMAND_PREFIX + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.slave_instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.full_control" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd" --metadata startup-script-url=http://storage.googleapis.com/spark-gce/growroot.sh' + zone_str )
 
     print '[ Launching nodes ]'
     run(cmds, parallelize = True)
@@ -422,7 +410,6 @@ def destroy_cluster(cluster_name, opts):
     Delete a cluster permanently.  All state will be lost.
     """
     print '[ Destroying cluster: %s ]'  % (cluster_name)
-    command_prefix = get_command_prefix(opts)
 
     # Get cluster machines
     (master_node, slave_nodes) = get_cluster_info(cluster_name, opts)
@@ -432,7 +419,7 @@ def destroy_cluster(cluster_name, opts):
 
     cmds = []
     for instance in [master_node] + slave_nodes:
-        cmds.append( command_prefix + ' instances delete ' + instance['host_name'] + ' --zone ' + instance['zone'] + ' --quiet' )
+        cmds.append( COMMAND_PREFIX + ' instances delete ' + instance['host_name'] + ' --zone ' + instance['zone'] + ' --quiet' )
 
     print 'Cluster %s with %d nodes will be deleted PERMANENTLY.  All data will be lost.' % (cluster_name, len(cmds))
     proceed = raw_input('Are you sure you want to proceed? (y/N) : ')
@@ -458,8 +445,8 @@ def stop_cluster(cluster_name, opts):
     command. All the data on the root drives of these instances will
     persist across reboots, but any data on attached drives will be lost.
     """
+    
     print '[ Stopping cluster: %s ]' % cluster_name
-    command_prefix = get_command_prefix(opts)
 
     # Get cluster machines
     (master_node, slave_nodes) = get_cluster_info(cluster_name, opts)
@@ -469,7 +456,7 @@ def stop_cluster(cluster_name, opts):
 
     cmds = []
     for instance in [master_node] + slave_nodes:
-        cmds.append( command_prefix + ' instances stop ' + instance['host_name'] + ' --zone ' + instance['zone'] )
+        cmds.append( COMMAND_PREFIX + ' instances stop ' + instance['host_name'] + ' --zone ' + instance['zone'] )
 
     # I can't decide if it is important to check with the user when stopping the cluster.  Seems
     # more convenient not to.  But I'm leaving this code in for now in case time shows that
@@ -494,8 +481,8 @@ def start_cluster(cluster_name, opts):
     """
     Start a cluster that is in the stopped state.
     """
+
     print '[ Starting cluster: %s ]' % (cluster_name)
-    command_prefix = get_command_prefix(opts)
 
     # Get cluster machines
     (master_node, slave_nodes) = get_cluster_info(cluster_name, opts)
@@ -505,7 +492,7 @@ def start_cluster(cluster_name, opts):
 
     cmds = []
     for instance in [master_node] + slave_nodes:
-        cmds.append( command_prefix + ' instances start ' + instance['host_name'] + ' --zone ' + instance['zone'] )
+        cmds.append( COMMAND_PREFIX + ' instances start ' + instance['host_name'] + ' --zone ' + instance['zone'] )
 
     print '[ Starting nodes ]'
     run(cmds, parallelize = True)
@@ -543,8 +530,6 @@ def start_cluster(cluster_name, opts):
 # -------------------------------------------------------------------------------------
     
 def deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes):
-    command_prefix = get_command_prefix(opts)
-
     print '[ Generating SSH keys on master and deploying to slave nodes ]'
 
     # Create keys on the master node, add them into authorized_keys, and then
@@ -560,11 +545,11 @@ def deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes):
     run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
 
     # Copy the ssh keys locally, and Clean up the archive on the master node.
-    run(command_prefix + " copy-files " + cluster_name + "-master:.ssh.tgz /tmp/spark_gce_ssh.tgz --zone " + master_node['zone'])
+    run(COMMAND_PREFIX + " copy-files " + cluster_name + "-master:.ssh.tgz /tmp/spark_gce_ssh.tgz --zone " + master_node['zone'])
     run(ssh_wrap(master_node, opts.identity_file, "rm -f .ssh.tgz"))
 
     # Upload to the slaves, and unpack the ssh keys on the slave nodes.
-    run([command_prefix + " copy-files /tmp/spark_gce_ssh.tgz " + slave['host_name'] + ": --zone " + slave['zone'] for slave in slave_nodes], parallelize = True)
+    run([COMMAND_PREFIX + " copy-files /tmp/spark_gce_ssh.tgz " + slave['host_name'] + ": --zone " + slave['zone'] for slave in slave_nodes], parallelize = True)
     run( [ssh_wrap(slave,
                    opts.identity_file,
                    "rm -rf ~/.ssh && tar xzf spark_gce_ssh.tgz && rm spark_gce_ssh.tgz")
@@ -585,8 +570,6 @@ def attach_local_ssd(cluster_name, opts, master_node, slave_nodes):
     run(cmds, parallelize = True)
 
 def cleanup_scratch_disks(cluster_name, opts, detach_first = True):
-    cmd_prefix = get_command_prefix(opts)
-
     # Get cluster ips
     print '[ Detaching and deleting cluster scratch disks ]'
     (master_node, slave_nodes) = get_cluster_info(cluster_name, opts)
@@ -594,33 +577,31 @@ def cleanup_scratch_disks(cluster_name, opts, detach_first = True):
     # Detach drives
     if detach_first:
         cmds = []
-        cmds = [ cmd_prefix + ' instances detach-disk ' + cluster_name + '-master --disk ' + cluster_name + '-m-scratch --zone ' + master_node['zone'] ]
+        cmds = [ COMMAND_PREFIX + ' instances detach-disk ' + cluster_name + '-master --disk ' + cluster_name + '-m-scratch --zone ' + master_node['zone'] ]
         for i, slave in enumerate(slave_nodes):
-            cmds.append( cmd_prefix + ' instances detach-disk ' + cluster_name + '-slave' + str(slave['slave_id']) + ' --disk ' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch --zone ' + slave['zone'] )
+            cmds.append( COMMAND_PREFIX + ' instances detach-disk ' + cluster_name + '-slave' + str(slave['slave_id']) + ' --disk ' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch --zone ' + slave['zone'] )
         run(cmds, parallelize = True, terminate_on_failure = False)
 
     # Delete drives
-    cmds = [ cmd_prefix + ' disks delete "' + cluster_name + '-m-scratch" --quiet --zone ' + master_node['zone'] ] 
+    cmds = [ COMMAND_PREFIX + ' disks delete "' + cluster_name + '-m-scratch" --quiet --zone ' + master_node['zone'] ] 
     for i, slave in enumerate(slave_nodes):
-        cmds.append( cmd_prefix + ' disks delete "' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch" --quiet --zone ' + slave['zone'] )
+        cmds.append( COMMAND_PREFIX + ' disks delete "' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch" --quiet --zone ' + slave['zone'] )
     run(cmds, parallelize = True, terminate_on_failure = False)
 
 
 def attach_persistent_scratch_disks(cluster_name, opts, master_node, slave_nodes):
-    cmd_prefix = get_command_prefix(opts)
-
     print '[ Adding new ' + opts.scratch_disk_size + ' drive of type "' + opts.scratch_disk_type + '" to each cluster node ]'
 
     cmds = []
-    cmds.append( [cmd_prefix + ' disks create "' + cluster_name + '-m-scratch" --size ' + opts.scratch_disk_size + ' --type "' + opts.scratch_disk_type + '" --zone ' + master_node['zone'],
-                  cmd_prefix + ' instances attach-disk ' + cluster_name + '-master --device-name "' + cluster_name + '-m-scratch" --disk ' + cluster_name + '-m-scratch --zone ' + master_node['zone'],
+    cmds.append( [COMMAND_PREFIX + ' disks create "' + cluster_name + '-m-scratch" --size ' + opts.scratch_disk_size + ' --type "' + opts.scratch_disk_type + '" --zone ' + master_node['zone'],
+                  COMMAND_PREFIX + ' instances attach-disk ' + cluster_name + '-master --device-name "' + cluster_name + '-m-scratch" --disk ' + cluster_name + '-m-scratch --zone ' + master_node['zone'],
                   ssh_wrap(master_node, opts.identity_file, "sudo mkfs.ext4 /dev/disk/by-id/google-"+ cluster_name + "-m-scratch " + " -F < /dev/null && " + 
                            "sudo mount /dev/disk/by-id/google-"+ cluster_name + "-m-scratch /mnt && " + 
                            'sudo chown "$USER":"$USER" /mnt') ] )
 
     for slave in slave_nodes:
-        cmds.append( [ cmd_prefix + ' disks create "' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch" --size ' + opts.scratch_disk_size + ' --type "' + opts.scratch_disk_type + '" --zone ' + slave['zone'],
-                       cmd_prefix + ' instances attach-disk ' + cluster_name + '-slave' +  str(slave['slave_id']) + ' --disk ' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch --device-name "' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch" --zone ' + slave['zone'],
+        cmds.append( [ COMMAND_PREFIX + ' disks create "' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch" --size ' + opts.scratch_disk_size + ' --type "' + opts.scratch_disk_type + '" --zone ' + slave['zone'],
+                       COMMAND_PREFIX + ' instances attach-disk ' + cluster_name + '-slave' +  str(slave['slave_id']) + ' --disk ' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch --device-name "' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch" --zone ' + slave['zone'],
                        ssh_wrap(slave, opts.identity_file, "sudo mkfs.ext4 /dev/disk/by-id/google-"+ cluster_name + "-s" + str(slave['slave_id']) + "-scratch " + " -F < /dev/null && " + 
                                 "sudo mount /dev/disk/by-id/google-"+ cluster_name + "-s" + str(slave['slave_id']) + "-scratch /mnt && " + 
                                 'sudo chown "$USER":"$USER" /mnt' ) ] )
@@ -631,14 +612,13 @@ def attach_persistent_scratch_disks(cluster_name, opts, master_node, slave_nodes
     
 def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
     print '[ Installing software dependencies (this will take several minutes) ]'
-    command_prefix = get_command_prefix(opts)
 
     # Create a user-writable /opt directory on all nodes.
     cmds = [ ssh_wrap(slave, opts.identity_file, "sudo mkdir -p /opt && sudo chown $USER.$USER /opt", group = True) for slave in [master_node] + slave_nodes ]
     run(cmds, parallelize = True)
     
     # Install the copy-dir script
-    run(command_prefix + " copy-files " + SPARK_GCE_PATH + "/copy-dir " + cluster_name + "-master: --zone " + master_node['zone'])
+    run(COMMAND_PREFIX + " copy-files " + SPARK_GCE_PATH + "/copy-dir " + cluster_name + "-master: --zone " + master_node['zone'])
     cmds = ['mkdir -p /opt/spark/bin && mkdir -p /opt/spark/conf',
             'mv $HOME/copy-dir /opt/spark/bin',
             'chmod 755 /opt/spark/bin/copy-dir']
@@ -650,7 +630,7 @@ def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
     for slave in slave_nodes:
         slave_file.write(slave['host_name'] + '\n')
     slave_file.close()
-    run(command_prefix + " copy-files " + slave_file.name + " " + cluster_name + "-master:slaves --zone " + master_node['zone'])
+    run(COMMAND_PREFIX + " copy-files " + slave_file.name + " " + cluster_name + "-master:slaves --zone " + master_node['zone'])
     run(ssh_wrap(master_node, opts.identity_file, "mv slaves /opt/spark/conf", group = True))
     run(ssh_wrap(master_node, opts.identity_file, "chmod 644 /opt/spark/conf/slaves", group = True))
     os.unlink(slave_file.name)
@@ -672,13 +652,12 @@ def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
              'rm -rf /opt/anaconda && bash Anaconda-2.1.0-Linux-x86_64.sh -b -p /opt/anaconda && rm Anaconda-2.1.0-Linux-x86_64.sh',
 
              # Set system path
-             'sudo sh -c \"echo \'export PATH=/opt/anaconda/bin:\$PATH:/opt/spark/bin:/opt/ephemeral-hdfs/bin\' >> /etc/bash.bashrc\"'
+             'sudo sh -c \"echo export PATH=/opt/anaconda/bin:\$PATH:/opt/spark/bin:/opt/ephemeral-hdfs/bin >> /etc/bash.bashrc\"'
          ]
     cmds = [ ssh_wrap(node, opts.identity_file, cmds, group = True) for node in [master_node] + slave_nodes ]
     run(cmds, parallelize = True)
 
 def install_spark(cluster_name, opts, master_node, slave_nodes):
-    command_prefix = get_command_prefix(opts)
     print '[ Installing Spark ]'
 
     # Install Spark and Scala
@@ -695,8 +674,8 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
     deploy_template(opts, master_node, "spark/conf/core-site.xml")
     deploy_template(opts, master_node, "spark/conf/spark-defaults.conf")
     deploy_template(opts, master_node, "spark/setup-auth.sh")
-    cmds = ['echo \'export SPARK_HOME=/opt/spark\' >> $HOME/.bashrc',
-            'echo \'export JAVA_HOME=/usr/lib/jvm/java-1.7.0-openjdk-amd64\' >> $HOME/.bashrc',
+    cmds = ['echo export SPARK_HOME=/opt/spark >> $HOME/.bashrc',
+            'echo export JAVA_HOME=/usr/lib/jvm/java-1.7.0-openjdk-amd64 >> $HOME/.bashrc',
             '/opt/spark/setup-auth.sh',
 
             # spark-env.conf
@@ -721,12 +700,12 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
     for slave in slave_nodes:
         slave_file.write(slave['host_name'] + '\n')
     slave_file.close()
-    cmds = [ command_prefix + " copy-files " + slave_file.name + " " + cluster_name + "-master:/opt/spark/conf/slaves --zone " + master_node['zone']]
+    cmds = [ COMMAND_PREFIX + " copy-files " + slave_file.name + " " + cluster_name + "-master:/opt/spark/conf/slaves --zone " + master_node['zone']]
     run(cmds)
     os.unlink(slave_file.name)
     
     # Install the copy-dir script
-    run(command_prefix + " copy-files " + SPARK_GCE_PATH + "/copy-dir " + cluster_name + "-master:/opt/spark/bin --zone " + master_node['zone'])
+    run(COMMAND_PREFIX + " copy-files " + SPARK_GCE_PATH + "/copy-dir " + cluster_name + "-master:/opt/spark/bin --zone " + master_node['zone'])
     
     # Copy spark to the slaves and create a symlink to $HOME/spark
     run(ssh_wrap(master_node, opts.identity_file, '/opt/spark/bin/copy-dir /opt/spark'))
@@ -972,6 +951,9 @@ def parse_args():
 
     global VERBOSE
     VERBOSE = opts.verbose
+
+    global COMMAND_PREFIX
+    COMMAND_PREFIX = get_command_prefix(opts)
         
     try:
         (action, cluster_name, optional_arg) = args
@@ -1015,7 +997,7 @@ def ssh_cluster(cluster_name, opts):
         print ("\nSSH port forwarding requested.  Remote port " + ssh_ports[1] +
                " will be accessible at http://localhost:" + ssh_ports[0] + '\n')
         try:
-            cmd = 'gcloud compute ssh ' + master_node['host_name'] + ' --ssh-flag="-L 8890:127.0.0.1:8888"'
+            cmd = COMMAND_PREFIX + ' ssh ' + master_node['host_name'] + ' --ssh-flag="-L 8890:127.0.0.1:8888"'
             subprocess.check_call(shlex.split(cmd))
         except subprocess.CalledProcessError:
             print "\nERROR: Could not establish ssh connection with port forwarding."
@@ -1025,7 +1007,7 @@ def ssh_cluster(cluster_name, opts):
 
     else:
         print master_node['host_name']
-        cmd = 'gcloud compute ssh ' + master_node['host_name']
+        cmd = COMMAND_PREFIX + ' ssh ' + master_node['host_name']
         subprocess.check_call(shlex.split(cmd))
 
 def sshfs_cluster(cluster_name, opts, optional_arg):
