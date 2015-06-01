@@ -439,7 +439,7 @@ def destroy_cluster(cluster_name, opts):
         sys.exit(0)
 
         
-def stop_cluster(cluster_name, opts):
+def stop_cluster(cluster_name, opts, slaves_only = False):
     """
     Stop a running cluster. The cluster can later be restarted with the 'start'
     command. All the data on the root drives of these instances will
@@ -455,7 +455,13 @@ def stop_cluster(cluster_name, opts):
         sys.exit(1)
 
     cmds = []
-    for instance in [master_node] + slave_nodes:
+
+    if slaves_only:
+        instance_list = slave_nodes
+    else:
+        instance_list = [master_node] + slave_nodes
+        
+    for instance in instance_list:
         cmds.append( COMMAND_PREFIX + ' instances stop ' + instance['host_name'] + ' --zone ' + instance['zone'] )
 
     # I can't decide if it is important to check with the user when stopping the cluster.  Seems
@@ -470,13 +476,13 @@ def stop_cluster(cluster_name, opts):
     run(cmds, parallelize = True, terminate_on_failure = False)
 
     # Clean up scratch disks
-    cleanup_scratch_disks(cluster_name, opts, detach_first = True)
+    cleanup_scratch_disks(cluster_name, opts, detach_first = True, slaves_only = slaves_only)
 
     #else:
     #   print "\nExiting without stopping cluster %s." % (cluster_name)
     #   sys.exit(0)
 
-            
+
 def start_cluster(cluster_name, opts):
     """
     Start a cluster that is in the stopped state.
@@ -569,7 +575,7 @@ def attach_local_ssd(cluster_name, opts, master_node, slave_nodes):
     cmds = [ ssh_wrap(slave, opts.identity_file, cmds, group = True) for slave in [master_node] + slave_nodes ]
     run(cmds, parallelize = True)
 
-def cleanup_scratch_disks(cluster_name, opts, detach_first = True):
+def cleanup_scratch_disks(cluster_name, opts, detach_first = True, slaves_only = False):
     # Get cluster ips
     print '[ Detaching and deleting cluster scratch disks ]'
     (master_node, slave_nodes) = get_cluster_info(cluster_name, opts)
@@ -577,13 +583,21 @@ def cleanup_scratch_disks(cluster_name, opts, detach_first = True):
     # Detach drives
     if detach_first:
         cmds = []
-        cmds = [ COMMAND_PREFIX + ' instances detach-disk ' + cluster_name + '-master --disk ' + cluster_name + '-m-scratch --zone ' + master_node['zone'] ]
+        if not slaves_only:
+            cmds = [ COMMAND_PREFIX + ' instances detach-disk ' + cluster_name + '-master --disk ' + cluster_name + '-m-scratch --zone ' + master_node['zone'] ]
+        else: 
+            cmds = [ ]
+            
         for i, slave in enumerate(slave_nodes):
             cmds.append( COMMAND_PREFIX + ' instances detach-disk ' + cluster_name + '-slave' + str(slave['slave_id']) + ' --disk ' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch --zone ' + slave['zone'] )
         run(cmds, parallelize = True, terminate_on_failure = False)
 
     # Delete drives
-    cmds = [ COMMAND_PREFIX + ' disks delete "' + cluster_name + '-m-scratch" --quiet --zone ' + master_node['zone'] ] 
+    if not slaves_only:
+        cmds = [ COMMAND_PREFIX + ' disks delete "' + cluster_name + '-m-scratch" --quiet --zone ' + master_node['zone'] ]
+    else:
+        cmds = []
+        
     for i, slave in enumerate(slave_nodes):
         cmds.append( COMMAND_PREFIX + ' disks delete "' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch" --quiet --zone ' + slave['zone'] )
     run(cmds, parallelize = True, terminate_on_failure = False)
@@ -1050,6 +1064,9 @@ def real_main():
 
     elif action == "stop":
         stop_cluster(cluster_name, opts)
+
+    elif action == "stop-slaves":
+        stop_cluster(cluster_name, opts, slaves_only = True)
 
     elif action == "destroy":
         destroy_cluster(cluster_name, opts)
