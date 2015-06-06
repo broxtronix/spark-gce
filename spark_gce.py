@@ -1066,7 +1066,10 @@ def real_main():
         stop_cluster(cluster_name, opts)
 
     elif action == "stop-slaves":
-        stop_cluster(cluster_name, opts, slaves_only = True)
+        print "\n\nStopping slave nodes, but leaving the master node running. NOTE: you must
+        run 'spark-gce stop' before restarting the cluster!\n\n"
+        stop_cluster(cluster_name, opts, slaves_only =
+        True)
 
     elif action == "destroy":
         destroy_cluster(cluster_name, opts)
