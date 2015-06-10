@@ -1,25 +1,58 @@
-#!/bin/sh
+#!/usr/bin/env python
 
-#
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
-# 
-#     http://www.apache.org/licenses/LICENSE-2.0
-# 
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
+try:
+    import spark_gce
+except ImportError as e:
+    print("Unable to import the spark_gce python package, this is likely due to an incorrect PYTHONPATH or missing dependencies.\nGot the following error during import:\n%s" % e)
+    sys.exit()
+except SyntaxError as e:
+    print("Unable to import the spark_gce python package, got the following syntax error:\n%s" % e)
+    sys.exit()
+except:
+    print("Unable to import the spark_gce python package for unknown reasons, got the following error:\n%s" % e)
+    sys.exit()
 
-# Preserve the user's CWD so that relative paths are passed correctly to 
-#+ the underlying Python script.
-SPARK_GCE_DIR="$(dirname $0)"
 
-python "${SPARK_GCE_DIR}/spark_gce.py" "$@"
+if __name__ == "__main__":
+    from spark_gce import real_main
+
+    print "Spark for Google Compute Engine v" + spark_gce.__version__
+    print ""
+
+    # Read the arguments
+    (opts, action, cluster_name, optional_arg) = parse_args()
+
+    # Make sure gcloud is accessible.
+    check_gcloud(cluster_name, opts)
+
+    # Launch the cluster
+    if action == "launch":
+        launch_cluster(cluster_name, opts)
+
+    elif action == "start":
+        start_cluster(cluster_name, opts)
+
+    elif action == "stop":
+        stop_cluster(cluster_name, opts)
+
+    elif action == "stop-slaves":
+        print "\n\nStopping slave nodes, but leaving the master node running. NOTE: you must
+        run 'spark-gce stop' before restarting the cluster!\n\n"
+        stop_cluster(cluster_name, opts, slaves_only =
+        True)
+
+    elif action == "destroy":
+        destroy_cluster(cluster_name, opts)
+
+    elif action == "login" or action == "ssh":
+        ssh_cluster(cluster_name, opts)
+
+    elif action == "mosh":
+        mosh_cluster(cluster_name, opts)
+
+    elif action == "sshfs":
+        sshfs_cluster(cluster_name, opts, optional_arg)
+
+    else:
+        print >> stderr, "Invalid action: %s" % action
+        sys.exit(1)

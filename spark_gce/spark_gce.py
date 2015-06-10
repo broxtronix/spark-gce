@@ -1088,8 +1088,3 @@ def real_main():
         sys.exit(1)
 
 
-def main():
-    real_main()
-
-if __name__ == "__main__":
-    main()
