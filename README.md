@@ -11,9 +11,9 @@ creates is different in several key respects:
  - The default pyspark environment is [Anaconda 2.1.0](http://continuum.io/) with python 2.7
  - At the moment Shark and Tachyon are not pre-installed (pull requests welcome)
 
-This is a fork of the Spark GCE script originally written by [Sigmoid
-Analytics](https://github.com/sigmoidanalytics/spark_gce).  This fork
-has been significantly re-architected in order to enable the following 
+This was originally a fork of the Spark GCE script originally written by
+[Sigmoid Analytics](https://github.com/sigmoidanalytics/spark_gce). This fork
+has been significantly re-architected in order to enable the following
 performance enhancements and new additions:
 
 - Command syntax and option parsing now more closely follows the conventions used in the spark-ec2 script.
@@ -32,6 +32,9 @@ performance enhancements and new additions:
 
 Getting Started
 ---------------
+
+Download the latest version of this script from
+[Github](https://github.com/broxtronix/spark-gce).
 
 In order to use this script, you must first install the [Google Cloud
 SDK](https://cloud.google.com/sdk/). After installing, be sure to authenticate
