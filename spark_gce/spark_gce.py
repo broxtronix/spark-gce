@@ -26,9 +26,7 @@ COMMAND_PREFIX = None
 # Determine the path of the spark_gce.py file. We assume that all of the
 # templates and auxillary shell scripts are located here as well.
 SPARK_GCE_PATH =  os.path.dirname(os.path.realpath(__file__))
-print SPARK_GCE_PATH
 
-print os.path.join(SPARK_GCE_PATH, os.path.join("support_files", "templates"))
 if not os.path.exists(os.path.join(SPARK_GCE_PATH, os.path.join("support_files", "templates"))):
     raise Exception("There was an error locating installation support files. Spark GCE is not installed properly.  Please re-install.")
 
@@ -1022,7 +1020,6 @@ def ssh_cluster(cluster_name, opts):
             sys.exit(1)
 
     else:
-        print master_node['host_name']
         cmd = COMMAND_PREFIX + ' ssh ' + master_node['host_name']
         subprocess.check_call(shlex.split(cmd))
 
