@@ -12,8 +12,10 @@ creates is different in several key respects:
  - At the moment Shark and Tachyon are not pre-installed (pull requests welcome)
 
 This was originally a fork of the Spark GCE script originally written by
-[Sigmoid Analytics](https://github.com/sigmoidanalytics/spark_gce). This fork
-has been significantly re-architected in order to enable the following
+[Sigmoid Analytics](https://github.com/sigmoidanalytics/spark_gce). Portions of
+this script have also been adapted from the
+[spark-ec2](https://github.com/mesos/spark-ec2) script that ships with Spark.
+This fork has been significantly re-architected in order to enable the following
 performance enhancements and new additions:
 
 - Command syntax and option parsing now more closely follows the conventions used in the spark-ec2 script.
