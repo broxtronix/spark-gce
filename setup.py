@@ -24,7 +24,7 @@ for root, dirnames, filenames in os.walk('spark_gce/support_files/templates'):
         support_files.append(os.path.join(root, filename)[10:])
 
 setup(
-    name='spark_gce',
+    name='spark-gce',
     packages=['spark_gce'],
     version=str(spark_gce.__version__),
     description='This script helps you create a Spark cluster on Google Compute Engine.',
@@ -32,7 +32,7 @@ setup(
     author_email='broxton@gmail.com',
     url='https://github.com/broxtronix/spark-gce',
     download_url = 'https://github.com/broxtronix/spark-gce/tarball/1.0.0',
-    scripts = ['spark-gce'],
+    scripts = ['bin/spark-gce'],
     package_data = {'spark_gce': support_files},
     long_description=open('README.md').read(),
     install_requires=open('requirements.txt').read().split()
