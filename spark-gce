@@ -1,4 +1,9 @@
 #!/usr/bin/env python
+import os, sys
+
+# Import the package from the local script directory
+print os.getcwd()
+sys.path.append(os.getcwd())
 
 try:
     import spark_gce
@@ -8,49 +13,55 @@ except ImportError as e:
 except SyntaxError as e:
     print("Unable to import the spark_gce python package, got the following syntax error:\n%s" % e)
     sys.exit()
-except:
+except Exception as e:
     print("Unable to import the spark_gce python package for unknown reasons, got the following error:\n%s" % e)
     sys.exit()
 
-
 if __name__ == "__main__":
-    from spark_gce import real_main
 
     print "Spark for Google Compute Engine v" + spark_gce.__version__
     print ""
 
     # Read the arguments
+    from spark_gce import parse_args
     (opts, action, cluster_name, optional_arg) = parse_args()
 
     # Make sure gcloud is accessible.
+    from spark_gce import check_gcloud
     check_gcloud(cluster_name, opts)
 
     # Launch the cluster
     if action == "launch":
+        from spark_gce import launch_cluster
         launch_cluster(cluster_name, opts)
 
     elif action == "start":
+        from spark_gce import start_cluster
         start_cluster(cluster_name, opts)
 
     elif action == "stop":
+        from spark_gce import stop_cluster
         stop_cluster(cluster_name, opts)
 
     elif action == "stop-slaves":
-        print "\n\nStopping slave nodes, but leaving the master node running. NOTE: you must
-        run 'spark-gce stop' before restarting the cluster!\n\n"
-        stop_cluster(cluster_name, opts, slaves_only =
-        True)
+        print "\n\nStopping slave nodes, but leaving the master node running. NOTE: you must run 'spark-gce stop' before restarting the cluster!\n\n"
+        from spark_gce import stop_cluster
+        stop_cluster(cluster_name, opts, slaves_only = True)
 
     elif action == "destroy":
+        from spark_gce import destroy_cluster
         destroy_cluster(cluster_name, opts)
 
     elif action == "login" or action == "ssh":
+        from spark_gce import ssh_cluster
         ssh_cluster(cluster_name, opts)
 
     elif action == "mosh":
+        from spark_gce import mosh_cluster
         mosh_cluster(cluster_name, opts)
 
     elif action == "sshfs":
+        from spark_gce import sshfs_cluster
         sshfs_cluster(cluster_name, opts, optional_arg)
 
     else:

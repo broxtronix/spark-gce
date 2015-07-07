@@ -26,8 +26,10 @@ COMMAND_PREFIX = None
 # Determine the path of the spark_gce.py file. We assume that all of the
 # templates and auxillary shell scripts are located here as well.
 SPARK_GCE_PATH =  os.path.dirname(os.path.realpath(__file__))
+print SPARK_GCE_PATH
 
-if not os.path.exists(os.path.join(SPARK_GCE_PATH, "templates")):
+print os.path.join(SPARK_GCE_PATH, os.path.join("support_files", "templates"))
+if not os.path.exists(os.path.join(SPARK_GCE_PATH, os.path.join("support_files", "templates"))):
     raise Exception("There was an error locating installation support files. Spark GCE is not installed properly.  Please re-install.")
 
 
@@ -202,7 +204,7 @@ def ssh_wrap(host, identity_file, cmds, group = False):
 
 def deploy_template(opts, node, template_name, root = "/opt"):
 
-    cmd = COMMAND_PREFIX + " copy-files " + SPARK_GCE_PATH + "/templates/" + template_name + " " + node['host_name'] + ":" + root + "/" + template_name + " --zone " + node['zone']
+    cmd = COMMAND_PREFIX + " copy-files " + SPARK_GCE_PATH + "/support_files/templates/" + template_name + " " + node['host_name'] + ":" + root + "/" + template_name + " --zone " + node['zone']
     if VERBOSE >= 1:
         print "  TEMPLATE: ", template_name
 
@@ -632,7 +634,7 @@ def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
     run(cmds, parallelize = True)
     
     # Install the copy-dir script
-    run(COMMAND_PREFIX + " copy-files " + SPARK_GCE_PATH + "/copy-dir " + cluster_name + "-master: --zone " + master_node['zone'])
+    run(COMMAND_PREFIX + " copy-files " + SPARK_GCE_PATH + "/support_files/copy-dir " + cluster_name + "-master: --zone " + master_node['zone'])
     cmds = ['mkdir -p /opt/spark/bin && mkdir -p /opt/spark/conf',
             'mv $HOME/copy-dir /opt/spark/bin',
             'chmod 755 /opt/spark/bin/copy-dir']
@@ -719,7 +721,7 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
     os.unlink(slave_file.name)
     
     # Install the copy-dir script
-    run(COMMAND_PREFIX + " copy-files " + SPARK_GCE_PATH + "/copy-dir " + cluster_name + "-master:/opt/spark/bin --zone " + master_node['zone'])
+    run(COMMAND_PREFIX + " copy-files " + SPARK_GCE_PATH + "/support_files/copy-dir " + cluster_name + "-master:/opt/spark/bin --zone " + master_node['zone'])
     
     # Copy spark to the slaves and create a symlink to $HOME/spark
     run(ssh_wrap(master_node, opts.identity_file, '/opt/spark/bin/copy-dir /opt/spark'))
@@ -1044,47 +1046,5 @@ def sshfs_cluster(cluster_name, opts, optional_arg):
     subprocess.check_call(shlex.split(cmd))
     print 'Mounted your home directory on ' + cluster_name + '-master under local directory \"' + optional_arg + '\" using SSHFS.'
         
-def real_main():
-
-    print "Spark for Google Compute Engine v0.2"
-    print ""
-
-    # Read the arguments
-    (opts, action, cluster_name, optional_arg) = parse_args()
-
-    # Make sure gcloud is accessible.
-    check_gcloud(cluster_name, opts)
-
-    # Launch the cluster
-    if action == "launch":
-        launch_cluster(cluster_name, opts)
-
-    elif action == "start":
-        start_cluster(cluster_name, opts)
-
-    elif action == "stop":
-        stop_cluster(cluster_name, opts)
-
-    elif action == "stop-slaves":
-        print "\n\nStopping slave nodes, but leaving the master node running. NOTE: you must
-        run 'spark-gce stop' before restarting the cluster!\n\n"
-        stop_cluster(cluster_name, opts, slaves_only =
-        True)
-
-    elif action == "destroy":
-        destroy_cluster(cluster_name, opts)
-
-    elif action == "login" or action == "ssh":
-        ssh_cluster(cluster_name, opts)
-
-    elif action == "mosh":
-        mosh_cluster(cluster_name, opts)
-
-    elif action == "sshfs":
-        sshfs_cluster(cluster_name, opts, optional_arg)
-
-    else:
-        print >> stderr, "Invalid action: %s" % action
-        sys.exit(1)
 
 
