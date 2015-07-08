@@ -177,8 +177,49 @@ def run(cmds, parallelize = False, terminate_on_failure = True):
         sys.exit(1)
     else:
         return num_failed
-    
 
+def check_ssh_config(cluster_name, opts):
+    '''This function checks to make sure that the user's ssh keys are set up to
+    access GCE instances without an interactive password prompt.
+    '''
+    
+    # First, check to make sure the user's ssh keys for Google compute engine
+    # exist and ssh-agent is running.
+    if not os.path.exists(os.path.expanduser("~/.ssh/google_compute_engine")):
+        print "ERROR: Your SSH keys for google compute engine (~/.ssh/google_compute_engine) do not exist.  Please generate them using \"ssh-keygen -t rsa -f $HOME/.ssh/google_compute_engine\""
+        sys.exit(1)
+
+    # Check to see if the key is encrypted, and whether it has been added to the
+    # user's ssh keychain.
+    is_encrypted = len(subprocess.Popen("grep ENCRYPTED $HOME/.ssh/google_compute_engine", shell=True, stdout=subprocess.PIPE).stdout.read()) > 0
+    is_active = len(subprocess.Popen("ssh-add -L | grep $HOME/.ssh/google_compute_engine", shell=True, stdout=subprocess.PIPE).stdout.read()) > 0
+        
+    if VERBOSE > 0:
+        print "[ SSH keys (checking ~/.ssh/google_compute_engine) ]"
+        print "  Encrypted: ", is_encrypted
+        print "  Added to ssh keychain: ", is_active
+        print ""
+
+    # For encrypted keys, we need to make sure ssh-agent is running, and the key has been added.
+    if is_encrypted:
+
+        # Check whether ssh-agent is running
+        if not os.environ.get("SSH_AUTH_SOCK"):
+            print "ERROR: You do not appear to have ssh-agent running.  You must be running ssh-agent in order to use spark-gce.  You can start it and then try again:"
+            print ""
+            print "  eval $(ssh-agent)"
+            print "  ssh-add ~/.ssh/google_compute_engine"
+            print ""
+            sys.exit(1)
+        
+        if not is_active:
+            print "ERROR: Your google compute engine key (~/.ssh/google_compute_engine) appears to be password protected, but has not been added to your active ssh keychain.  Please add it and try again:"
+            print ""
+            print "  ssh-add ~/.ssh/google_compute_engine"
+            print ""
+            sys.exit(1)
+
+            
 def ssh_wrap(host, identity_file, cmds, group = False):
     '''Given a command to run on a remote host, this function wraps the command in
     the appropriate ssh invocation that can be run on the local host to achieve
@@ -190,7 +231,7 @@ def ssh_wrap(host, identity_file, cmds, group = False):
     of commands will be combined via the && shell operator and sent in a single
     ssh command.
     '''
-    
+
     if not isinstance(cmds, list):
         cmds = [ cmds ]
 
@@ -209,7 +250,7 @@ def ssh_wrap(host, identity_file, cmds, group = False):
         if host['external_ip'] is None:
             print "Error: attempting to ssh into machine instance \"%s\" without a public IP address.  Exiting." % (host["host_name"])
             sys.exit(1)
-        result.append( COMMAND_PREFIX + ' ssh --ssh-flag="-o ConnectTimeout=900" --ssh-flag="-o BatchMode=yes" --ssh-flag="-o ServerAliveInterval=60" --ssh-flag="-o UserKnownHostsFile=/dev/null" --ssh-flag="-o CheckHostIP=no" --ssh-flag="-o StrictHostKeyChecking=no" --ssh-flag="-o LogLevel=quiet" ' + host['host_name'] + ' --command \'' + cmd + '\'')
+        result.append( COMMAND_PREFIX + ' ssh --ssh-flag="-o ConnectTimeout=900" --ssh-flag="-o BatchMode=yes" --ssh-flag="-o ServerAliveInterval=60" --ssh-flag="-o UserKnownHostsFile=/dev/null" --ssh-flag="-o CheckHostIP=no" --ssh-flag="-o StrictHostKeyChecking=no" --ssh-flag="-o LogLevel=quiet" ' + host['host_name'] + ' --command \'' + cmd + '\'' + " --zone " + host['zone'])
     return result
 
 def deploy_template(opts, node, template_name, root = "/opt"):
@@ -243,7 +284,7 @@ def check_gcloud(cluster_name, opts):
 
 def wait_for_cluster(cluster_name, opts, retry_delay = 10, num_retries = 12):
     import time
-    
+
     # Query for instance info a second time.  Once instances start, we should get IP addresses.
     (master_node, slave_nodes) = get_cluster_info(cluster_name, opts)
 

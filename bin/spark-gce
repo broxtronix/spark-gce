@@ -51,6 +51,10 @@ if __name__ == "__main__":
     from spark_gce import check_gcloud
     check_gcloud(cluster_name, opts)
 
+    # Make sure ssh is correctly configured
+    from spark_gce import check_ssh_config
+    check_ssh_config(cluster_name, opts)
+
     # Launch the cluster
     if action == "launch":
         from spark_gce import launch_cluster

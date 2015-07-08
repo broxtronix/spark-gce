@@ -13,9 +13,10 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-__version__ = "1.0.3"
+__version__ = "1.0.4"
 
 # Import package-level symbols
+from spark_gce import check_ssh_config
 from spark_gce import parse_args
 from spark_gce import check_gcloud
 from spark_gce import launch_cluster
