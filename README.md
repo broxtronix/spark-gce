@@ -36,7 +36,11 @@ Getting Started
 ---------------
 
 Download the latest version of this script from
-[Github](https://github.com/broxtronix/spark-gce).
+[Github](https://github.com/broxtronix/spark-gce), or simply install the PyPi package:
+
+```
+pip install --upgrade spark-gce
+```
 
 In order to use this script, you must first install the [Google Cloud
 SDK](https://cloud.google.com/sdk/). After installing, be sure to authenticate

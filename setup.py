@@ -19,7 +19,7 @@ import fnmatch
 import os
 
 support_files = []
-for root, dirnames, filenames in os.walk('spark_gce/support_files/templates'):
+for root, dirnames, filenames in os.walk('spark_gce/support_files'):
     for filename in fnmatch.filter(filenames, '*'):
         support_files.append(os.path.join(root, filename)[10:])
 
