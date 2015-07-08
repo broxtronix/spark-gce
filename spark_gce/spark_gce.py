@@ -203,8 +203,10 @@ def check_ssh_config(cluster_name, opts):
     # For encrypted keys, we need to make sure ssh-agent is running, and the key has been added.
     if is_encrypted:
 
-        # Check whether ssh-agent is running
-        if not os.environ.get("SSH_AUTH_SOCK"):
+        # Check whether ssh-agent is running.  We check both for the environment variable, and
+        # we make sure that the variable points to a valid SSH auth socket. 
+        ssh_auth_sock = os.environ.get("SSH_AUTH_SOCK")
+        if not ssh_auth_sock or not os.path.exists(ssh_auth_sock):
             print "ERROR: You do not appear to have ssh-agent running.  You must be running ssh-agent in order to use spark-gce.  You can start it and then try again:"
             print ""
             print "  eval $(ssh-agent)"

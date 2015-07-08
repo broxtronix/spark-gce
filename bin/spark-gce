@@ -23,7 +23,6 @@
 import os, sys
 
 # Import the package from the local script directory
-print os.getcwd()
 sys.path.append(os.getcwd())
 
 try:
