@@ -13,7 +13,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-__version__ = "1.0.5"
+__version__ = "1.0.6"
 
 # Import package-level symbols
 from spark_gce import check_ssh_config

@@ -31,7 +31,7 @@ setup(
     author='Michael Broxton',
     author_email='broxton@gmail.com',
     url='https://github.com/broxtronix/spark-gce',
-    download_url = 'https://github.com/broxtronix/spark-gce/tarball/1.0.5',
+    download_url = 'https://github.com/broxtronix/spark-gce/tarball/1.0.6',
     scripts = ['bin/spark-gce'],
     package_data = {'spark_gce': support_files},
     install_requires=['boto']
