@@ -552,110 +552,110 @@ def get_or_make_group(conn, name, vpc_id):
         print("Creating security group " + name)
         return conn.create_security_group(name, "Spark EC2 group", vpc_id)
 
-def get_or_create_security_groups(cluster_name, vpc_id) -> 'List[boto.ec2.securitygroup.SecurityGroup]':
-    """
-    If they do not already exist, create all the security groups needed for a
-    Flintrock cluster.
-    """
-    SecurityGroupRule = namedtuple(
-        'SecurityGroupRule', [
-            'ip_protocol',
-            'from_port',
-            'to_port',
-            'src_group',
-            'cidr_ip'])
-    # TODO: Make these into methods, since we need this logic (though simple)
-    #       in multiple places. (?)
-    flintrock_group_name = 'flintrock'
-    cluster_group_name = 'flintrock-' + cluster_name
+# def get_or_create_security_groups(cluster_name, vpc_id) -> 'List[boto.ec2.securitygroup.SecurityGroup]':
+#     """
+#     If they do not already exist, create all the security groups needed for a
+#     Flintrock cluster.
+#     """
+#     SecurityGroupRule = namedtuple(
+#         'SecurityGroupRule', [
+#             'ip_protocol',
+#             'from_port',
+#             'to_port',
+#             'src_group',
+#             'cidr_ip'])
+#     # TODO: Make these into methods, since we need this logic (though simple)
+#     #       in multiple places. (?)
+#     flintrock_group_name = 'flintrock'
+#     cluster_group_name = 'flintrock-' + cluster_name
 
-    search_results = connection.get_all_security_groups(
-        filters={
-            'group-name': [flintrock_group_name, cluster_group_name]
-        })
-    flintrock_group = next((sg for sg in search_results if sg.name == flintrock_group_name), None)
-    cluster_group = next((sg for sg in search_results if sg.name == cluster_group_name), None)
+#     search_results = connection.get_all_security_groups(
+#         filters={
+#             'group-name': [flintrock_group_name, cluster_group_name]
+#         })
+#     flintrock_group = next((sg for sg in search_results if sg.name == flintrock_group_name), None)
+#     cluster_group = next((sg for sg in search_results if sg.name == cluster_group_name), None)
 
-    if not flintrock_group:
-        flintrock_group = connection.create_security_group(
-            name=flintrock_group_name,
-            description="flintrock base group",
-            vpc_id=vpc_id)
+#     if not flintrock_group:
+#         flintrock_group = connection.create_security_group(
+#             name=flintrock_group_name,
+#             description="flintrock base group",
+#             vpc_id=vpc_id)
 
-    # Rules for the client interacting with the cluster.
-    flintrock_client_ip = (urllib.request.urlopen('http://checkip.amazonaws.com/').read().decode('utf-8').strip())
-    flintrock_client_cidr = '{ip}/32'.format(ip=flintrock_client_ip)
+#     # Rules for the client interacting with the cluster.
+#     flintrock_client_ip = (urllib.request.urlopen('http://checkip.amazonaws.com/').read().decode('utf-8').strip())
+#     flintrock_client_cidr = '{ip}/32'.format(ip=flintrock_client_ip)
 
-    client_rules = [
-        SecurityGroupRule(
-            ip_protocol='tcp',
-            from_port=22,
-            to_port=22,
-            cidr_ip=flintrock_client_cidr,
-            src_group=None),
-        SecurityGroupRule(
-            ip_protocol='tcp',
-            from_port=8080,
-            to_port=8081,
-            cidr_ip=flintrock_client_cidr,
-            src_group=None),
-        SecurityGroupRule(
-            ip_protocol='tcp',
-            from_port=4040,
-            to_port=4040,
-            cidr_ip=flintrock_client_cidr,
-            src_group=None)
-    ]
+#     client_rules = [
+#         SecurityGroupRule(
+#             ip_protocol='tcp',
+#             from_port=22,
+#             to_port=22,
+#             cidr_ip=flintrock_client_cidr,
+#             src_group=None),
+#         SecurityGroupRule(
+#             ip_protocol='tcp',
+#             from_port=8080,
+#             to_port=8081,
+#             cidr_ip=flintrock_client_cidr,
+#             src_group=None),
+#         SecurityGroupRule(
+#             ip_protocol='tcp',
+#             from_port=4040,
+#             to_port=4040,
+#             cidr_ip=flintrock_client_cidr,
+#             src_group=None)
+#     ]
 
-    # TODO: Don't try adding rules that already exist.
-    # TODO: Add rules in one shot.
-    for rule in client_rules:
-        try:
-            flintrock_group.authorize(**vars(rule))
-        except boto.exception.EC2ResponseError as e:
-            if e.error_code != 'InvalidPermission.Duplicate':
-                print("Error adding rule: {r}".format(r=rule))
-                raise
+#     # TODO: Don't try adding rules that already exist.
+#     # TODO: Add rules in one shot.
+#     for rule in client_rules:
+#         try:
+#             flintrock_group.authorize(**vars(rule))
+#         except boto.exception.EC2ResponseError as e:
+#             if e.error_code != 'InvalidPermission.Duplicate':
+#                 print("Error adding rule: {r}".format(r=rule))
+#                 raise
 
-    # Rules for internal cluster communication.
-    if not cluster_group:
-        cluster_group = connection.create_security_group(
-            name=cluster_group_name,
-            description="Flintrock cluster group",
-            vpc_id=vpc_id)
+#     # Rules for internal cluster communication.
+#     if not cluster_group:
+#         cluster_group = connection.create_security_group(
+#             name=cluster_group_name,
+#             description="Flintrock cluster group",
+#             vpc_id=vpc_id)
 
-    cluster_rules = [
-        SecurityGroupRule(
-            ip_protocol='icmp',
-            from_port=-1,
-            to_port=-1,
-            src_group=cluster_group,
-            cidr_ip=None),
-        SecurityGroupRule(
-            ip_protocol='tcp',
-            from_port=0,
-            to_port=65535,
-            src_group=cluster_group,
-            cidr_ip=None),
-        SecurityGroupRule(
-            ip_protocol='udp',
-            from_port=0,
-            to_port=65535,
-            src_group=cluster_group,
-        cidr_ip=None)
-    ]
+#     cluster_rules = [
+#         SecurityGroupRule(
+#             ip_protocol='icmp',
+#             from_port=-1,
+#             to_port=-1,
+#             src_group=cluster_group,
+#             cidr_ip=None),
+#         SecurityGroupRule(
+#             ip_protocol='tcp',
+#             from_port=0,
+#             to_port=65535,
+#             src_group=cluster_group,
+#             cidr_ip=None),
+#         SecurityGroupRule(
+#             ip_protocol='udp',
+#             from_port=0,
+#             to_port=65535,
+#             src_group=cluster_group,
+#         cidr_ip=None)
+#     ]
 
-    # TODO: Don't try adding rules that already exist.
-    # TODO: Add rules in one shot.
-    for rule in cluster_rules:
-        try:
-            cluster_group.authorize(**vars(rule))
-        except boto.exception.EC2ResponseError as e:
-            if e.error_code != 'InvalidPermission.Duplicate':
-                print("Error adding rule: {r}".format(r=rule))
-                raise
+#     # TODO: Don't try adding rules that already exist.
+#     # TODO: Add rules in one shot.
+#     for rule in cluster_rules:
+#         try:
+#             cluster_group.authorize(**vars(rule))
+#         except boto.exception.EC2ResponseError as e:
+#             if e.error_code != 'InvalidPermission.Duplicate':
+#                 print("Error adding rule: {r}".format(r=rule))
+#                 raise
 
-    return [flintrock_group, cluster_group]
+#     return [flintrock_group, cluster_group]
 
 
     
@@ -787,8 +787,7 @@ def launch_nodes(conn, cluster_name, master_group, slave_group, opts):
             user_data_content = user_data_file.read()
         
     # Check if instances are already running in our groups
-    existing_masters, existing_slaves = get_existing_cluster(conn, opts, cluster_name,
-                                                             die_on_error=False)
+    existing_masters, existing_slaves = get_existing_cluster(conn, opts, cluster_name, die_on_error=False)
     if existing_slaves or (existing_masters and not opts.use_existing_master):
         print("ERROR: There are already instances running in group %s or %s" %
               (master_group.name, slave_group.name), file=stderr)
@@ -944,14 +943,6 @@ def launch_nodes(conn, cluster_name, master_group, slave_group, opts):
             user_data=user_data_content,
             instance_initiated_shutdown_behavior=opts.instance_initiated_shutdown_behavior,
             instance_profile_name=opts.instance_profile_name)
-
-        master_nodes = master_res.instances
-
-        connection.create_tags(
-            resource_ids=[master_instance.id],
-            tags={
-                'flintrock-role': 'master',
-                'Name': '{c}-master'.format(c=cluster_name)})
         
         print("Launched master in %s, regid = %s" % (zone, master_res.id))
 
@@ -959,9 +950,6 @@ def launch_nodes(conn, cluster_name, master_group, slave_group, opts):
     # This wait time corresponds to SPARK-4983
     print("Waiting for AWS to propagate instance metadata...")
     time.sleep(10)
-
-    
-    slave_instances = slave_res.instances[0]
 
     # Give the instances descriptive names and set additional tags
     additional_tags = {}
@@ -984,143 +972,142 @@ def launch_nodes(conn, cluster_name, master_group, slave_group, opts):
     return (master_nodes, slave_nodes)
         
 
-def launch_ec2(connection, cluster_name, opts, security_groups):
-    try:
+# def launch_ec2(connection, cluster_name, opts, security_groups):
+#     try:
 
-        try:
-            image = connection.get_all_images(image_ids=[opts.ami])[0]
-        except:
-            print("Could not find AMI " + opts.ami, file=stderr)
-            sys.exit(1)
-        
+#         try:
+#             image = connection.get_all_images(image_ids=[opts.ami])[0]
+#         except:
+#             print("Could not find AMI " + opts.ami, file=stderr)
+#             sys.exit(1)
 
-        # Create block device mapping so that we can add EBS volumes if asked to.
-        # The first drive is attached as /dev/sds, 2nd as /dev/sdt, ... /dev/sdz
-        from boto.ec2.blockdevicemapping import BlockDeviceMapping, BlockDeviceType, EBSBlockDeviceType
-        block_map = BlockDeviceMapping()
-        if opts.ebs_vol_size > 0:
-            for i in range(opts.ebs_vol_num):
-                device = EBSBlockDeviceType()
-                device.size = opts.ebs_vol_size
-                device.volume_type = opts.ebs_vol_type
-                device.delete_on_termination = True
-                block_map["/dev/sd" + chr(ord('s') + i)] = device
+#         # Create block device mapping so that we can add EBS volumes if asked to.
+#         # The first drive is attached as /dev/sds, 2nd as /dev/sdt, ... /dev/sdz
+#         from boto.ec2.blockdevicemapping import BlockDeviceMapping, BlockDeviceType, EBSBlockDeviceType
+#         block_map = BlockDeviceMapping()
+#         if opts.ebs_vol_size > 0:
+#             for i in range(opts.ebs_vol_num):
+#                 device = EBSBlockDeviceType()
+#                 device.size = opts.ebs_vol_size
+#                 device.volume_type = opts.ebs_vol_type
+#                 device.delete_on_termination = True
+#                 block_map["/dev/sd" + chr(ord('s') + i)] = device
 
-        # AWS ignores the AMI-specified block device mapping for M3 (see SPARK-3342).
-        if opts.slave_instance_type.startswith('m3.'):
-            for i in range(get_num_disks(opts.slave_instance_type)):
-                dev = BlockDeviceType()
-                dev.ephemeral_name = 'ephemeral%d' % i
-                # The first ephemeral drive is /dev/sdb.
-                name = '/dev/sd' + string.letters[i + 1]
-                block_map[name] = dev
+#         # AWS ignores the AMI-specified block device mapping for M3 (see SPARK-3342).
+#         if opts.slave_instance_type.startswith('m3.'):
+#             for i in range(get_num_disks(opts.slave_instance_type)):
+#                 dev = BlockDeviceType()
+#                 dev.ephemeral_name = 'ephemeral%d' % i
+#                 # The first ephemeral drive is /dev/sdb.
+#                 name = '/dev/sd' + string.letters[i + 1]
+#                 block_map[name] = dev
 
-        reservation = connection.run_instances(
-            image_id=opts.ami,
-            min_count=(opts.slaves + 1),
-            max_count=(opts.slaves + 1),
-            block_device_map=block_map,
-            key_name=opts.key_pair,
-            instance_type=opts.master_instance_type,
-            placement=opts.zone,
-            security_group_ids=[sg.id for sg in security_groups],
-            subnet_id=opts.subnet_id,
-            placement_group=opts.placement_group,
-            tenancy=tenancy,
-            ebs_optimized=ebs_optimized,
-            instance_initiated_shutdown_behavior=opts.instance_initiated_shutdown_behavior,
-            instance_profile_name=opts.instance_profile_name)
+#         reservation = connection.run_instances(
+#             image_id=opts.ami,
+#             min_count=(opts.slaves + 1),
+#             max_count=(opts.slaves + 1),
+#             block_device_map=block_map,
+#             key_name=opts.key_pair,
+#             instance_type=opts.master_instance_type,
+#             placement=opts.zone,
+#             security_group_ids=[sg.id for sg in security_groups],
+#             subnet_id=opts.subnet_id,
+#             placement_group=opts.placement_group,
+#             tenancy=tenancy,
+#             ebs_optimized=ebs_optimized,
+#             instance_initiated_shutdown_behavior=opts.instance_initiated_shutdown_behavior,
+#             instance_profile_name=opts.instance_profile_name)
             
 
-        time.sleep(10)  # AWS metadata eventual consistency tax.
+#         time.sleep(10)  # AWS metadata eventual consistency tax.
 
-        while True:
-            for instance in reservation.instances:
-                if instance.state == 'running':
-                    continue
-                else:
-                    instance.update()
-                    time.sleep(3)
-                    break
-            else:
-                print("All {c} instances now running.".format(
-                    c=len(reservation.instances)))
-                break
+#         while True:
+#             for instance in reservation.instances:
+#                 if instance.state == 'running':
+#                     continue
+#                 else:
+#                     instance.update()
+#                     time.sleep(3)
+#                     break
+#             else:
+#                 print("All {c} instances now running.".format(
+#                     c=len(reservation.instances)))
+#                 break
 
-        master_instance = reservation.instances[0]
-        slave_instances = reservation.instances[1:]
+#         master_instance = reservation.instances[0]
+#         slave_instances = reservation.instances[1:]
 
-        connection.create_tags(
-            resource_ids=[master_instance.id],
-            tags={
-                'flintrock-role': 'master',
-                'Name': '{c}-master'.format(c=cluster_name)})
-        connection.create_tags(
-            resource_ids=[i.id for i in slave_instances],
-            tags={
-                'flintrock-role': 'slave',
-                'Name': '{c}-slave'.format(c=cluster_name)})
+#         connection.create_tags(
+#             resource_ids=[master_instance.id],
+#             tags={
+#                 'flintrock-role': 'master',
+#                 'Name': '{c}-master'.format(c=cluster_name)})
+#         connection.create_tags(
+#             resource_ids=[i.id for i in slave_instances],
+#             tags={
+#                 'flintrock-role': 'slave',
+#                 'Name': '{c}-slave'.format(c=cluster_name)})
 
-        cluster_info = ClusterInfo(
-            name=cluster_name,
-            ssh_key_pair=generate_ssh_key_pair(),
-            master_host=master_instance.public_dns_name,
-            slave_hosts=[instance.public_dns_name for instance in slave_instances],
-            spark_scratch_dir='/mnt/spark',
-            spark_master_opts="")
+#         cluster_info = ClusterInfo(
+#             name=cluster_name,
+#             ssh_key_pair=generate_ssh_key_pair(),
+#             master_host=master_instance.public_dns_name,
+#             slave_hosts=[instance.public_dns_name for instance in slave_instances],
+#             spark_scratch_dir='/mnt/spark',
+#             spark_master_opts="")
 
-        # TODO: Abstract away. No-one wants to see this async shite here.
-        loop = asyncio.get_event_loop()
+#         # TODO: Abstract away. No-one wants to see this async shite here.
+#         loop = asyncio.get_event_loop()
 
-        tasks = []
-        for instance in reservation.instances:
-            task = loop.run_in_executor(
-                executor=None,
-                callback=functools.partial(
-                    provision_ec2_node,
-                    modules=modules,
-                    host=instance.ip_address,
-                    identity_file=identity_file,
-                    cluster_info=cluster_info))
-            tasks.append(task)
-        loop.run_until_complete(asyncio.wait(tasks))
-        loop.close()
+#         tasks = []
+#         for instance in reservation.instances:
+#             task = loop.run_in_executor(
+#                 executor=None,
+#                 callback=functools.partial(
+#                     provision_ec2_node,
+#                     modules=modules,
+#                     host=instance.ip_address,
+#                     identity_file=identity_file,
+#                     cluster_info=cluster_info))
+#             tasks.append(task)
+#         loop.run_until_complete(asyncio.wait(tasks))
+#         loop.close()
 
-        print("All {c} instances provisioned.".format(
-            c=len(reservation.instances)))
+#         print("All {c} instances provisioned.".format(
+#             c=len(reservation.instances)))
 
-        # --- This stuff here runs after all the nodes are provisioned. ---
-        with paramiko.client.SSHClient() as client:
-            client.load_system_host_keys()
-            client.set_missing_host_key_policy(paramiko.client.AutoAddPolicy())
+#         # --- This stuff here runs after all the nodes are provisioned. ---
+#         with paramiko.client.SSHClient() as client:
+#             client.load_system_host_keys()
+#             client.set_missing_host_key_policy(paramiko.client.AutoAddPolicy())
 
-            client.connect(
-                username="ec2-user",
-                hostname=master_instance.public_dns_name,
-                key_filename=identity_file,
-                timeout=3)
+#             client.connect(
+#                 username="ec2-user",
+#                 hostname=master_instance.public_dns_name,
+#                 key_filename=identity_file,
+#                 timeout=3)
 
-            for module in modules:
-                module.configure_master(
-                    ssh_client=client,
-                    cluster_info=cluster_info)
+#             for module in modules:
+#                 module.configure_master(
+#                     ssh_client=client,
+#                     cluster_info=cluster_info)
 
-            # Login to the master for manual inspection.
-            # TODO: Move to master_login() method.
-            # ret = subprocess.call(
-            #     """
-            #     set -x
-            #     ssh -o "StrictHostKeyChecking=no" \
-            #         -i {identity_file} \
-            #         ec2-user@{host}
-            #     """.format(
-            #         identity_file=shlex.quote(identity_file),
-            #         host=shlex.quote(master_instance.public_dns_name)),
-            #     shell=True)
+#             # Login to the master for manual inspection.
+#             # TODO: Move to master_login() method.
+#             # ret = subprocess.call(
+#             #     """
+#             #     set -x
+#             #     ssh -o "StrictHostKeyChecking=no" \
+#             #         -i {identity_file} \
+#             #         ec2-user@{host}
+#             #     """.format(
+#             #         identity_file=shlex.quote(identity_file),
+#             #         host=shlex.quote(master_instance.public_dns_name)),
+#             #     shell=True)
 
-    except KeyboardInterrupt as e:
-        print("Exiting...")
-        sys.exit(1)
+#     except KeyboardInterrupt as e:
+#         print("Exiting...")
+#         sys.exit(1)
     
 
 

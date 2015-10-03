@@ -26,68 +26,68 @@ import os, sys
 sys.path.append(os.getcwd())
 
 try:
-    import brood
+    import vapor
 except ImportError as e:
-    print("Unable to import the brood python package, this is likely due to an incorrect PYTHONPATH or missing dependencies.\nGot the following error during import:\n%s" % e)
+    print("Unable to import the vapor python package, this is likely due to an incorrect PYTHONPATH or missing dependencies.\nGot the following error during import:\n%s" % e)
     sys.exit()
 except SyntaxError as e:
-    print("Unable to import the brood python package, got the following syntax error:\n%s" % e)
+    print("Unable to import the vapor python package, got the following syntax error:\n%s" % e)
     sys.exit()
 except Exception as e:
-    print("Unable to import the brood python package for unknown reasons, got the following error:\n%s" % e)
+    print("Unable to import the vapor python package for unknown reasons, got the following error:\n%s" % e)
     sys.exit()
 
 if __name__ == "__main__":
 
-    print("Brood: Spark for Google Compute Engine v" + brood.__version__)
+    print("Vapor: Spark for Amazon EC2 v" + vapor.__version__)
     print("")
 
     # Read the arguments
-    from brood.gce import parse_args
+    from vapor.ec2 import parse_args
     (opts, action, cluster_name, optional_arg) = parse_args()
 
-    # Make sure gcloud is accessible.
-    from brood.gce import check_gcloud
-    check_gcloud(cluster_name, opts)
+    # Make sure aws command line tools are accessible.
+    from vapor.ec2 import check_aws
+    check_aws(cluster_name, opts)
 
     # Make sure ssh is correctly configured
-    from brood.gce import check_ssh_config
+    from vapor.ec2 import check_ssh_config
     check_ssh_config(cluster_name, opts)
 
     # Launch the cluster
     if action == "launch":
-        from brood.gce import launch_cluster
+        from vapor.ec2 import launch_cluster
         launch_cluster(cluster_name, opts)
 
     elif action == "start":
-        from brood.gce import start_cluster
+        from vapor.ec2 import start_cluster
         start_cluster(cluster_name, opts)
 
     elif action == "stop":
-        from brood.gce import stop_cluster
+        from vapor.ec2 import stop_cluster
         stop_cluster(cluster_name, opts)
 
     elif action == "stop-slaves":
-        print("\n\nStopping slave nodes, but leaving the master node running. NOTE: you must run 'spark-gce stop' before restarting the cluster!\n\n")
-        from brood.gce import stop_cluster
+        print ("\n\nStopping slave nodes, but leaving the master node running. NOTE: you must run 'spark-ec2 stop' before restarting the cluster!\n\n")
+        from vapor.ec2 import stop_cluster
         stop_cluster(cluster_name, opts, slaves_only = True)
 
     elif action == "destroy":
-        from brood.gce import destroy_cluster
+        from vapor.ec2 import destroy_cluster
         destroy_cluster(cluster_name, opts)
 
     elif action == "login" or action == "ssh":
-        from brood.gce import ssh_cluster
+        from vapor.ec2 import ssh_cluster
         ssh_cluster(cluster_name, opts)
 
     elif action == "mosh":
-        from brood.gce import mosh_cluster
+        from vapor.ec2 import mosh_cluster
         mosh_cluster(cluster_name, opts)
 
     elif action == "sshfs":
-        from brood.gce import sshfs_cluster
+        from vapor.ec2 import sshfs_cluster
         sshfs_cluster(cluster_name, opts, optional_arg)
 
     else:
-        print("Invalid action: %s" % action)
+        print ("Invalid action: %s" % action)
         sys.exit(1)

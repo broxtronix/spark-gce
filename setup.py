@@ -13,29 +13,29 @@
 # limitations under the License.
 
 from setuptools import setup
-import brood
+import vapor
 
 import fnmatch
 import os
 
 support_files = []
-for root, dirnames, filenames in os.walk('brood/support_files_gce'):
+for root, dirnames, filenames in os.walk('vapor/support_files_gce'):
     for filename in fnmatch.filter(filenames, '*'):
         support_files.append(os.path.join(root, filename)[10:])
-for root, dirnames, filenames in os.walk('brood/support_files_ec2'):
+for root, dirnames, filenames in os.walk('vapor/support_files_ec2'):
     for filename in fnmatch.filter(filenames, '*'):
         support_files.append(os.path.join(root, filename)[10:])
 
 setup(
-    name='brood',
-    packages=['brood'],
+    name='vapor',
+    packages=['vapor'],
     version=str(spark_gce.__version__),
     description='This script helps you create a Spark cluster on Google Compute Engine or Amazon EC2.',
     author='Michael Broxton',
     author_email='broxton@gmail.com',
-    url='https://github.com/broxtronix/brood',
-    download_url = 'https://github.com/broxtronix/brood/tarball/1.1.0',
-    scripts = ['bin/brood'],
-    package_data = {'brood': support_files},
+    url='https://github.com/broxtronix/vapor',
+    download_url = 'https://github.com/broxtronix/vapor/tarball/1.1.0',
+    scripts = ['bin/vapor'],
+    package_data = {'vapor': support_files},
     install_requires=['boto']
 )
