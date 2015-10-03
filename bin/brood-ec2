@@ -39,16 +39,16 @@ except Exception as e:
 
 if __name__ == "__main__":
 
-    print("Brood: Spark for Google Compute Engine v" + brood.__version__)
+    print("Brood: Spark for Amazon EC2 v" + brood.__version__)
     print("")
 
     # Read the arguments
     from brood.ec2 import parse_args
     (opts, action, cluster_name, optional_arg) = parse_args()
 
-    # Make sure gcloud is accessible.
-    from brood.ec2 import check_gcloud
-    check_gcloud(cluster_name, opts)
+    # Make sure aws command line tools are accessible.
+    from brood.ec2 import check_aws
+    check_aws(cluster_name, opts)
 
     # Make sure ssh is correctly configured
     from brood.ec2 import check_ssh_config

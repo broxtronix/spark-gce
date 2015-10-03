@@ -24,6 +24,13 @@ import sys
 import time
 import shlex
 import json
+import itertools
+from datetime import datetime
+from sys import stderr
+from collections import namedtuple
+
+import boto
+import boto.ec2
 
 # Global Variables
 #
@@ -44,18 +51,178 @@ if not os.path.exists(os.path.join(SPARK_EC2_PATH, os.path.join("support_files_e
 # This information is used to automatically set and tune various Spark
 # parameters based on the cluster instance type.
 instance_info = {
-    "n1-standard-4"  : { "num_cpus":  4, "gb_mem": 15,   "spark_master_memory": "10g" , "spark_slave_memory": "11g" },
-    "n1-standard-8"  : { "num_cpus":  8, "gb_mem": 30,   "spark_master_memory": "20g" , "spark_slave_memory": "25g" },
-    "n1-standard-16" : { "num_cpus": 16, "gb_mem": 60,   "spark_master_memory": "40g" , "spark_slave_memory": "50g" },
-    "n1-standard-32" : { "num_cpus": 32, "gb_mem": 120,  "spark_master_memory": "50g" , "spark_slave_memory": "95g" },
-    "n1-highmem-4"   : { "num_cpus":  4, "gb_mem": 26,   "spark_master_memory": "15g" , "spark_slave_memory": "22g" },
-    "n1-highmem-8"   : { "num_cpus":  8, "gb_mem": 52,   "spark_master_memory": "30g" , "spark_slave_memory": "45g" },
-    "n1-highmem-16"  : { "num_cpus": 16, "gb_mem": 104,  "spark_master_memory": "50g" , "spark_slave_memory": "90g" },
-    "n1-highmem-32"  : { "num_cpus": 32, "gb_mem": 208,  "spark_master_memory": "80g" , "spark_slave_memory": "190g" },
-    "n1-highcpu-8"   : { "num_cpus":  8, "gb_mem": 7.2,  "spark_master_memory": "4g"  , "spark_slave_memory": "6g"  },
-    "n1-highcpu-16"  : { "num_cpus": 16, "gb_mem": 14.4, "spark_master_memory": "10g" , "spark_slave_memory": "11g" },
-    "n1-highcpu-32"  : { "num_cpus": 32, "gb_mem": 28.8, "spark_master_memory": "20g" , "spark_slave_memory": "25g" },
+    'm3.large'    : { "num_cpus":   2, "gb_mem": 7.5,  "spark_master_memory": "4g" , "spark_slave_memory": "5g" },
+    "g2.8xlarge"  : { "num_cpus":  32, "gb_mem": 60,   "spark_master_memory": "30g" , "spark_slave_memory": "40g" },
 }
+
+# Get number of local disks available for a given EC2 instance type.
+def get_num_disks(instance_type):
+    # Source: http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/InstanceStorage.html
+    # Last Updated: 2015-06-19
+    # For easy maintainability, please keep this manually-inputted dictionary sorted by key.
+    disks_by_instance = {
+        "c1.medium":   1,
+        "c1.xlarge":   4,
+        "c3.large":    2,
+        "c3.xlarge":   2,
+        "c3.2xlarge":  2,
+        "c3.4xlarge":  2,
+        "c3.8xlarge":  2,
+        "c4.large":    0,
+        "c4.xlarge":   0,
+        "c4.2xlarge":  0,
+        "c4.4xlarge":  0,
+        "c4.8xlarge":  0,
+        "cc1.4xlarge": 2,
+        "cc2.8xlarge": 4,
+        "cg1.4xlarge": 2,
+        "cr1.8xlarge": 2,
+        "d2.xlarge":   3,
+        "d2.2xlarge":  6,
+        "d2.4xlarge":  12,
+        "d2.8xlarge":  24,
+        "g2.2xlarge":  1,
+        "g2.8xlarge":  2,
+        "hi1.4xlarge": 2,
+        "hs1.8xlarge": 24,
+        "i2.xlarge":   1,
+        "i2.2xlarge":  2,
+        "i2.4xlarge":  4,
+        "i2.8xlarge":  8,
+        "m1.small":    1,
+        "m1.medium":   1,
+        "m1.large":    2,
+        "m1.xlarge":   4,
+        "m2.xlarge":   1,
+        "m2.2xlarge":  1,
+        "m2.4xlarge":  2,
+        "m3.medium":   1,
+        "m3.large":    1,
+        "m3.xlarge":   2,
+        "m3.2xlarge":  2,
+        "m4.large":    0,
+        "m4.xlarge":   0,
+        "m4.2xlarge":  0,
+        "m4.4xlarge":  0,
+        "m4.10xlarge": 0,
+        "r3.large":    1,
+        "r3.xlarge":   1,
+        "r3.2xlarge":  1,
+        "r3.4xlarge":  1,
+        "r3.8xlarge":  2,
+        "t1.micro":    0,
+        "t2.micro":    0,
+        "t2.small":    0,
+        "t2.medium":   0,
+        "t2.large":    0,
+    }
+    if instance_type in disks_by_instance:
+        return disks_by_instance[instance_type]
+    else:
+        print("WARNING: Don't know number of disks on instance type %s; assuming 1"
+              % instance_type, file=stderr)
+        return 1
+
+def wait_for_cluster_state(conn, opts, cluster_instances, cluster_state):
+    """
+    Wait for all the instances in the cluster to reach a designated state.
+
+    cluster_instances: a list of boto.ec2.instance.Instance
+    cluster_state: a string representing the desired state of all the instances in the cluster
+           value can be 'ssh-ready' or a valid value from boto.ec2.instance.InstanceState such as
+           'running', 'terminated', etc.
+           (would be nice to replace this with a proper enum: http://stackoverflow.com/a/1695250)
+    """
+    sys.stdout.write(
+        "Waiting for cluster to enter '{s}' state.".format(s=cluster_state)
+    )
+    sys.stdout.flush()
+
+    start_time = datetime.now()
+    num_attempts = 0
+
+    while True:
+        time.sleep(5 * num_attempts)  # seconds
+
+        for i in cluster_instances:
+            i.update()
+
+        max_batch = 100
+        statuses = []
+        for j in range(0, len(cluster_instances), max_batch):
+            batch = [i.id for i in cluster_instances[j:j + max_batch]]
+            statuses.extend(conn.get_all_instance_status(instance_ids=batch))
+
+        if cluster_state == 'ssh-ready':
+            if all(i.state == 'running' for i in cluster_instances) and \
+               all(s.system_status.status == 'ok' for s in statuses) and \
+               all(s.instance_status.status == 'ok' for s in statuses) and \
+               is_cluster_ssh_available(cluster_instances, opts):
+                break
+        else:
+            if all(i.state == cluster_state for i in cluster_instances):
+                break
+
+        num_attempts += 1
+
+        sys.stdout.write(".")
+        sys.stdout.flush()
+
+    sys.stdout.write("\n")
+
+    end_time = datetime.now()
+    print("Cluster is now in '{s}' state. Waited {t} seconds.".format(
+        s=cluster_state,
+        t=(end_time - start_time).seconds
+    ))
+
+
+# Gets a list of zones to launch instances in
+def get_zones(conn, opts):
+    if opts.zone == 'all':
+        zones = [z.name for z in conn.get_all_zones()]
+    else:
+        zones = [opts.zone]
+    return zones
+
+# Gets the number of items in a partition
+def get_partition(total, num_partitions, current_partitions):
+    num_slaves_this_zone = total // num_partitions
+    if (total % num_partitions) - current_partitions > 0:
+        num_slaves_this_zone += 1
+    return num_slaves_this_zone
+
+
+# Gets the IP address, taking into account the --private-ips flag
+def get_ip_address(instance, private_ips=False):
+    ip = instance.ip_address if not private_ips else \
+         instance.private_ip_address
+    return ip
+
+
+# Gets the DNS name, taking into account the --private-ips flag
+def get_dns_name(instance, private_ips=False):
+    dns = instance.public_dns_name if not private_ips else \
+          instance.private_ip_address
+    return dns
+    
+# Open a connection to the specified EC2 region using boto.
+# Returns the (open) connection object.
+#
+def open_ec2_connection(opts):
+    from boto import ec2
+    try:
+        conn = ec2.connect_to_region(opts.region)
+    except Exception as e:
+        print((e), file=stderr)
+        sys.exit(1)
+
+    # Select an AZ at random if it was not specified.
+    if opts.zone == "":
+        import random
+        opts.zone = random.choice(conn.get_all_zones()).name
+
+    return conn
 
 
 # ----------------------------------------------------------------------------------------
@@ -269,16 +436,17 @@ def get_command_prefix(opts):
         command_prefix += ' --project ' + opts.project
     return command_prefix
 
-def check_gcloud(cluster_name, opts):
-    cmd = "gcloud info"
+def check_aws(cluster_name, opts):
+    cmd = "aws configure list"
     try:
+        import subprocess
         output = subprocess.check_output(cmd, shell=True)
         if VERBOSE >= 1:
-            print('[ Verifying gcloud ]')
+            print('[ Verifying aws command line tools ]')
             print(output)
         
     except OSError:
-        print("%s executable not found. \n# Make sure gcloud is installed and authenticated\nPlease follow https://cloud.google.com/compute/docs/gcloud-compute/" % myexec)
+        print("%s executable not found. \n# Make sure aws command line tools are installed and authenticated\nPlease follow instructions at https://aws.amazon.com/cli/" % myexec)
         sys.exit(1)
 
 def wait_for_cluster(cluster_name, opts, retry_delay = 10, num_retries = 12):
@@ -374,56 +542,606 @@ def get_cluster_scratch_disks(cluster_name, opts):
 #                                 NETWORK SETUP
 # -------------------------------------------------------------------------------------
 
-def setup_network(cluster_name, opts):
+# Get the EC2 security group of the given name, creating it if it doesn't exist
+def get_or_make_group(conn, name, vpc_id):
+    groups = conn.get_all_security_groups()
+    group = [g for g in groups if g.name == name]
+    if len(group) > 0:
+        return group[0]
+    else:
+        print("Creating security group " + name)
+        return conn.create_security_group(name, "Spark EC2 group", vpc_id)
+
+def get_or_create_security_groups(cluster_name, vpc_id) -> 'List[boto.ec2.securitygroup.SecurityGroup]':
+    """
+    If they do not already exist, create all the security groups needed for a
+    Flintrock cluster.
+    """
+    SecurityGroupRule = namedtuple(
+        'SecurityGroupRule', [
+            'ip_protocol',
+            'from_port',
+            'to_port',
+            'src_group',
+            'cidr_ip'])
+    # TODO: Make these into methods, since we need this logic (though simple)
+    #       in multiple places. (?)
+    flintrock_group_name = 'flintrock'
+    cluster_group_name = 'flintrock-' + cluster_name
+
+    search_results = connection.get_all_security_groups(
+        filters={
+            'group-name': [flintrock_group_name, cluster_group_name]
+        })
+    flintrock_group = next((sg for sg in search_results if sg.name == flintrock_group_name), None)
+    cluster_group = next((sg for sg in search_results if sg.name == cluster_group_name), None)
+
+    if not flintrock_group:
+        flintrock_group = connection.create_security_group(
+            name=flintrock_group_name,
+            description="flintrock base group",
+            vpc_id=vpc_id)
+
+    # Rules for the client interacting with the cluster.
+    flintrock_client_ip = (urllib.request.urlopen('http://checkip.amazonaws.com/').read().decode('utf-8').strip())
+    flintrock_client_cidr = '{ip}/32'.format(ip=flintrock_client_ip)
+
+    client_rules = [
+        SecurityGroupRule(
+            ip_protocol='tcp',
+            from_port=22,
+            to_port=22,
+            cidr_ip=flintrock_client_cidr,
+            src_group=None),
+        SecurityGroupRule(
+            ip_protocol='tcp',
+            from_port=8080,
+            to_port=8081,
+            cidr_ip=flintrock_client_cidr,
+            src_group=None),
+        SecurityGroupRule(
+            ip_protocol='tcp',
+            from_port=4040,
+            to_port=4040,
+            cidr_ip=flintrock_client_cidr,
+            src_group=None)
+    ]
+
+    # TODO: Don't try adding rules that already exist.
+    # TODO: Add rules in one shot.
+    for rule in client_rules:
+        try:
+            flintrock_group.authorize(**vars(rule))
+        except boto.exception.EC2ResponseError as e:
+            if e.error_code != 'InvalidPermission.Duplicate':
+                print("Error adding rule: {r}".format(r=rule))
+                raise
+
+    # Rules for internal cluster communication.
+    if not cluster_group:
+        cluster_group = connection.create_security_group(
+            name=cluster_group_name,
+            description="Flintrock cluster group",
+            vpc_id=vpc_id)
+
+    cluster_rules = [
+        SecurityGroupRule(
+            ip_protocol='icmp',
+            from_port=-1,
+            to_port=-1,
+            src_group=cluster_group,
+            cidr_ip=None),
+        SecurityGroupRule(
+            ip_protocol='tcp',
+            from_port=0,
+            to_port=65535,
+            src_group=cluster_group,
+            cidr_ip=None),
+        SecurityGroupRule(
+            ip_protocol='udp',
+            from_port=0,
+            to_port=65535,
+            src_group=cluster_group,
+        cidr_ip=None)
+    ]
+
+    # TODO: Don't try adding rules that already exist.
+    # TODO: Add rules in one shot.
+    for rule in cluster_rules:
+        try:
+            cluster_group.authorize(**vars(rule))
+        except boto.exception.EC2ResponseError as e:
+            if e.error_code != 'InvalidPermission.Duplicate':
+                print("Error adding rule: {r}".format(r=rule))
+                raise
+
+    return [flintrock_group, cluster_group]
+
+
+    
+def setup_network(conn, cluster_name, opts):
     print('[ Setting up Network & Firewall Entries ]')
     cmds = []
 
-    cmds.append( COMMAND_PREFIX + ' networks create "' + cluster_name + '-network" --range "10.240.0.0/16"' )
-    
-    # Uncomment the above and comment the below section if you don't want to open all ports for public.
-    # cmds.append( COMMAND_PREFIX + ' compute firewall-rules delete ' + cluster_name + '-internal' )
-    cmds.append( COMMAND_PREFIX + ' firewall-rules create ' + cluster_name + '-internal --network ' + cluster_name + '-network --allow tcp udp icmp' )
-    cmds.append( COMMAND_PREFIX + ' firewall-rules create ' + cluster_name + '-spark-external --network ' + cluster_name + '-network --allow tcp:8080 tcp:4040 tcp:5080' )
-    run(cmds)
+    master_group = get_or_make_group(conn, cluster_name + "-master", opts.vpc_id)
+    slave_group = get_or_make_group(conn, cluster_name + "-slaves", opts.vpc_id)
+    authorized_address = opts.authorized_address
+    if master_group.rules == []:  # Group was just now created
+        if opts.vpc_id is None:
+            master_group.authorize(src_group=master_group)
+            master_group.authorize(src_group=slave_group)
+        else:
+            master_group.authorize(ip_protocol='icmp', from_port=-1, to_port=-1,
+                                   src_group=master_group)
+            master_group.authorize(ip_protocol='tcp', from_port=0, to_port=65535,
+                                   src_group=master_group)
+            master_group.authorize(ip_protocol='udp', from_port=0, to_port=65535,
+                                   src_group=master_group)
+            master_group.authorize(ip_protocol='icmp', from_port=-1, to_port=-1,
+                                   src_group=slave_group)
+            master_group.authorize(ip_protocol='tcp', from_port=0, to_port=65535,
+                                   src_group=slave_group)
+            master_group.authorize(ip_protocol='udp', from_port=0, to_port=65535,
+                                   src_group=slave_group)
+        master_group.authorize('tcp', 22, 22, authorized_address)
+        master_group.authorize('tcp', 8080, 8081, authorized_address)
+        master_group.authorize('tcp', 18080, 18080, authorized_address)
+        master_group.authorize('tcp', 19999, 19999, authorized_address)
+        master_group.authorize('tcp', 50030, 50030, authorized_address)
+        master_group.authorize('tcp', 50070, 50070, authorized_address)
+        master_group.authorize('tcp', 60070, 60070, authorized_address)
+        master_group.authorize('tcp', 4040, 4045, authorized_address)
+        # Rstudio (GUI for R) needs port 8787 for web access
+        master_group.authorize('tcp', 8787, 8787, authorized_address)
+        # HDFS NFS gateway requires 111,2049,4242 for tcp & udp
+        master_group.authorize('tcp', 111, 111, authorized_address)
+        master_group.authorize('udp', 111, 111, authorized_address)
+        master_group.authorize('tcp', 2049, 2049, authorized_address)
+        master_group.authorize('udp', 2049, 2049, authorized_address)
+        master_group.authorize('tcp', 4242, 4242, authorized_address)
+        master_group.authorize('udp', 4242, 4242, authorized_address)
+        # RM in YARN mode uses 8088
+        master_group.authorize('tcp', 8088, 8088, authorized_address)
+        master_group.authorize('tcp', 5080, 5080, authorized_address)
+    if slave_group.rules == []:  # Group was just now created
+        if opts.vpc_id is None:
+            slave_group.authorize(src_group=master_group)
+            slave_group.authorize(src_group=slave_group)
+        else:
+            slave_group.authorize(ip_protocol='icmp', from_port=-1, to_port=-1,
+                                  src_group=master_group)
+            slave_group.authorize(ip_protocol='tcp', from_port=0, to_port=65535,
+                                  src_group=master_group)
+            slave_group.authorize(ip_protocol='udp', from_port=0, to_port=65535,
+                                  src_group=master_group)
+            slave_group.authorize(ip_protocol='icmp', from_port=-1, to_port=-1,
+                                  src_group=slave_group)
+            slave_group.authorize(ip_protocol='tcp', from_port=0, to_port=65535,
+                                  src_group=slave_group)
+            slave_group.authorize(ip_protocol='udp', from_port=0, to_port=65535,
+                                  src_group=slave_group)
+        slave_group.authorize('tcp', 22, 22, authorized_address)
+        slave_group.authorize('tcp', 8080, 8081, authorized_address)
+        slave_group.authorize('tcp', 50060, 50060, authorized_address)
+        slave_group.authorize('tcp', 50075, 50075, authorized_address)
+        slave_group.authorize('tcp', 60060, 60060, authorized_address)
+        slave_group.authorize('tcp', 60075, 60075, authorized_address)
 
-def delete_network(cluster_name, opts):
-    print('[ Deleting Network & Firewall Entries ]')
-    cmds = []
+    return (master_group, slave_group)
 
-    # Uncomment the above and comment the below section if you don't want to open all ports for public.
-    # cmds.append( COMMAND_PREFIX + ' compute firewall-rules delete ' + cluster_name + '-internal --quiet' )
-    cmds.append(  COMMAND_PREFIX + ' firewall-rules delete ' + cluster_name + '-internal --quiet' )
-    cmds.append(  COMMAND_PREFIX + ' firewall-rules delete ' + cluster_name + '-spark-external --quiet' )
-    cmds.append( COMMAND_PREFIX + ' networks delete "' + cluster_name + '-network" --quiet' )
-    run(cmds)
-
+        
 # -------------------------------------------------------------------------------------
 #                      CLUSTER LAUNCH, DESTROY, START, STOP
 # -------------------------------------------------------------------------------------
+
+def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
+    """
+    Get the EC2 instances in an existing cluster if available.
+    Returns a tuple of lists of EC2 instance objects for the masters and slaves.
+    """
+    print("Searching for existing cluster {c} in region {r}...".format(
+          c=cluster_name, r=opts.region))
+
+    def get_instances(group_names):
+        """
+        Get all non-terminated instances that belong to any of the provided security groups.
+
+        EC2 reservation filters and instance states are documented here:
+            http://docs.aws.amazon.com/cli/latest/reference/ec2/describe-instances.html#options
+        """
+        reservations = conn.get_all_reservations(
+            filters={"instance.group-name": group_names})
+        instances = itertools.chain.from_iterable(r.instances for r in reservations)
+        return [i for i in instances if i.state not in ["shutting-down", "terminated"]]
+
+    master_instances = get_instances([cluster_name + "-master"])
+    slave_instances = get_instances([cluster_name + "-slaves"])
+
+    if any((master_instances, slave_instances)):
+        print("Found {m} master{plural_m}, {s} slave{plural_s}.".format(
+              m=len(master_instances),
+              plural_m=('' if len(master_instances) == 1 else 's'),
+              s=len(slave_instances),
+              plural_s=('' if len(slave_instances) == 1 else 's')))
+
+    if not master_instances and die_on_error:
+        print("ERROR: Could not find a master for cluster {c} in region {r}.".format(
+              c=cluster_name, r=opts.region), file=sys.stderr)
+        sys.exit(1)
+
+    return (master_instances, slave_instances)
+
+
+def launch_nodes(conn, cluster_name, master_group, slave_group, opts):
+    if opts.identity_file is None:
+        print("ERROR: Must provide an identity file (-i) for ssh connections.", file=stderr)
+        sys.exit(1)
+
+    if opts.key_pair is None:
+        print("ERROR: Must provide a key pair name (-k) to use on instances.", file=stderr)
+        sys.exit(1)
+
+    user_data_content = None
+    if opts.user_data:
+        with open(opts.user_data) as user_data_file:
+            user_data_content = user_data_file.read()
+        
+    # Check if instances are already running in our groups
+    existing_masters, existing_slaves = get_existing_cluster(conn, opts, cluster_name,
+                                                             die_on_error=False)
+    if existing_slaves or (existing_masters and not opts.use_existing_master):
+        print("ERROR: There are already instances running in group %s or %s" %
+              (master_group.name, slave_group.name), file=stderr)
+        sys.exit(1)
+    
+    # Use group ids to work around https://github.com/boto/boto/issues/350
+    additional_group_ids = []
+    if opts.additional_security_group:
+        additional_group_ids = [sg.id
+                                for sg in conn.get_all_security_groups()
+                                if opts.additional_security_group in (sg.name, sg.id)]
+
+    try:
+        image = conn.get_all_images(image_ids=[opts.ami])[0]
+    except:
+        print("Could not find AMI " + opts.ami, file=stderr)
+        sys.exit(1)
+
+    # Create block device mapping so that we can add EBS volumes if asked to.
+    # The first drive is attached as /dev/sds, 2nd as /dev/sdt, ... /dev/sdz
+    from boto.ec2.blockdevicemapping import BlockDeviceMapping, BlockDeviceType, EBSBlockDeviceType
+    block_map = BlockDeviceMapping()
+    if opts.ebs_vol_size > 0:
+        for i in range(opts.ebs_vol_num):
+            device = EBSBlockDeviceType()
+            device.size = opts.ebs_vol_size
+            device.volume_type = opts.ebs_vol_type
+            device.delete_on_termination = True
+            block_map["/dev/sd" + chr(ord('s') + i)] = device
+
+    # AWS ignores the AMI-specified block device mapping for M3 (see SPARK-3342).
+    if opts.slave_instance_type.startswith('m3.'):
+        for i in range(get_num_disks(opts.slave_instance_type)):
+            dev = BlockDeviceType()
+            dev.ephemeral_name = 'ephemeral%d' % i
+            # The first ephemeral drive is /dev/sdb.
+            name = '/dev/sd' + string.letters[i + 1]
+            block_map[name] = dev
+
+    # Launch slaves
+    if opts.spot_price is not None:
+        # Launch spot instances with the requested price
+        print("Requesting %d slaves as spot instances with price $%.3f" %
+              (opts.slaves, opts.spot_price))
+        zones = get_zones(conn, opts)
+        num_zones = len(zones)
+        i = 0
+        my_req_ids = []
+        for zone in zones:
+            num_slaves_this_zone = get_partition(opts.slaves, num_zones, i)
+            slave_reqs = conn.request_spot_instances(
+                price=opts.spot_price,
+                image_id=opts.ami,
+                launch_group="launch-group-%s" % cluster_name,
+                placement=zone,
+                count=num_slaves_this_zone,
+                key_name=opts.key_pair,
+                security_group_ids=[slave_group.id] + additional_group_ids,
+                instance_type=opts.slave_instance_type,
+                block_device_map=block_map,
+                subnet_id=opts.subnet_id,
+                placement_group=opts.placement_group,
+                user_data=user_data_content,
+                instance_profile_name=opts.slave_instance_profile_name)
+            my_req_ids += [req.id for req in slave_reqs]
+            i += 1
+
+        print("Waiting for spot instances to be granted...")
+        try:
+            while True:
+                time.sleep(10)
+                reqs = conn.get_all_spot_instance_requests()
+                id_to_req = {}
+                for r in reqs:
+                    id_to_req[r.id] = r
+                active_instance_ids = []
+                for i in my_req_ids:
+                    if i in id_to_req and id_to_req[i].state == "active":
+                        active_instance_ids.append(id_to_req[i].instance_id)
+                if len(active_instance_ids) == opts.slaves:
+                    print("All %d slaves granted" % opts.slaves)
+                    reservations = conn.get_all_reservations(active_instance_ids)
+                    slave_nodes = []
+                    for r in reservations:
+                        slave_nodes += r.instances
+                    break
+                else:
+                    print("%d of %d slaves granted, waiting longer" % (
+                        len(active_instance_ids), opts.slaves))
+        except:
+            print("Canceling spot instance requests")
+            conn.cancel_spot_instance_requests(my_req_ids)
+            # Log a warning if any of these requests actually launched instances:
+            (master_nodes, slave_nodes) = get_existing_cluster(
+                conn, opts, cluster_name, die_on_error=False)
+            running = len(master_nodes) + len(slave_nodes)
+            if running:
+                print(("WARNING: %d instances are still running" % running), file=stderr)
+            sys.exit(0)
+    else:
+        # Launch non-spot instances
+        zones = get_zones(conn, opts)
+        num_zones = len(zones)
+        i = 0
+        slave_nodes = []
+        for zone in zones:
+            num_slaves_this_zone = get_partition(opts.slaves, num_zones, i)
+            if num_slaves_this_zone > 0:
+                slave_res = image.run(
+                    key_name=opts.key_pair,
+                    security_group_ids=[slave_group.id] + additional_group_ids,
+                    instance_type=opts.slave_instance_type,
+                    placement=zone,
+                    min_count=num_slaves_this_zone,
+                    max_count=num_slaves_this_zone,
+                    block_device_map=block_map,
+                    subnet_id=opts.subnet_id,
+                    placement_group=opts.placement_group,
+                    user_data=user_data_content,
+                    instance_initiated_shutdown_behavior=opts.instance_initiated_shutdown_behavior,
+                    instance_profile_name=opts.instance_profile_name)
+                slave_nodes += slave_res.instances
+                print("Launched {s} slave{plural_s} in {z}, regid = {r}".format(
+                      s=num_slaves_this_zone,
+                      plural_s=('' if num_slaves_this_zone == 1 else 's'),
+                      z=zone,
+                      r=slave_res.id))
+            i += 1
+
+    # Launch or resume masters
+    if existing_masters:
+        print("Starting master...")
+        for inst in existing_masters:
+            if inst.state not in ["shutting-down", "terminated"]:
+                inst.start()
+        master_nodes = existing_masters
+    else:
+        master_type = opts.master_instance_type
+        if master_type == "":
+            master_type = opts.slave_instance_type
+        if opts.zone == 'all':
+            opts.zone = random.choice(conn.get_all_zones()).name
+        master_res = image.run(
+            key_name=opts.key_pair,
+            security_group_ids=[master_group.id] + additional_group_ids,
+            instance_type=master_type,
+            placement=opts.zone,
+            min_count=1,
+            max_count=1,
+            block_device_map=block_map,
+            subnet_id=opts.subnet_id,
+            placement_group=opts.placement_group,
+            user_data=user_data_content,
+            instance_initiated_shutdown_behavior=opts.instance_initiated_shutdown_behavior,
+            instance_profile_name=opts.instance_profile_name)
+
+        master_nodes = master_res.instances
+
+        connection.create_tags(
+            resource_ids=[master_instance.id],
+            tags={
+                'flintrock-role': 'master',
+                'Name': '{c}-master'.format(c=cluster_name)})
+        
+        print("Launched master in %s, regid = %s" % (zone, master_res.id))
+
+
+    # This wait time corresponds to SPARK-4983
+    print("Waiting for AWS to propagate instance metadata...")
+    time.sleep(10)
+
+    
+    slave_instances = slave_res.instances[0]
+
+    # Give the instances descriptive names and set additional tags
+    additional_tags = {}
+    if opts.additional_tags.strip():
+        additional_tags = dict(
+            map(str.strip, tag.split(':', 1)) for tag in opts.additional_tags.split(',')
+        )
+
+    for master in master_nodes:
+        master.add_tags(
+            dict(additional_tags, Name='{cn}-master-{iid}'.format(cn=cluster_name, iid=master.id))
+        )
+
+    for slave in slave_nodes:
+        slave.add_tags(
+            dict(additional_tags, Name='{cn}-slave-{iid}'.format(cn=cluster_name, iid=slave.id))
+        )
+
+    # Return all the instances
+    return (master_nodes, slave_nodes)
+        
+
+def launch_ec2(connection, cluster_name, opts, security_groups):
+    try:
+
+        try:
+            image = connection.get_all_images(image_ids=[opts.ami])[0]
+        except:
+            print("Could not find AMI " + opts.ami, file=stderr)
+            sys.exit(1)
+        
+
+        # Create block device mapping so that we can add EBS volumes if asked to.
+        # The first drive is attached as /dev/sds, 2nd as /dev/sdt, ... /dev/sdz
+        from boto.ec2.blockdevicemapping import BlockDeviceMapping, BlockDeviceType, EBSBlockDeviceType
+        block_map = BlockDeviceMapping()
+        if opts.ebs_vol_size > 0:
+            for i in range(opts.ebs_vol_num):
+                device = EBSBlockDeviceType()
+                device.size = opts.ebs_vol_size
+                device.volume_type = opts.ebs_vol_type
+                device.delete_on_termination = True
+                block_map["/dev/sd" + chr(ord('s') + i)] = device
+
+        # AWS ignores the AMI-specified block device mapping for M3 (see SPARK-3342).
+        if opts.slave_instance_type.startswith('m3.'):
+            for i in range(get_num_disks(opts.slave_instance_type)):
+                dev = BlockDeviceType()
+                dev.ephemeral_name = 'ephemeral%d' % i
+                # The first ephemeral drive is /dev/sdb.
+                name = '/dev/sd' + string.letters[i + 1]
+                block_map[name] = dev
+
+        reservation = connection.run_instances(
+            image_id=opts.ami,
+            min_count=(opts.slaves + 1),
+            max_count=(opts.slaves + 1),
+            block_device_map=block_map,
+            key_name=opts.key_pair,
+            instance_type=opts.master_instance_type,
+            placement=opts.zone,
+            security_group_ids=[sg.id for sg in security_groups],
+            subnet_id=opts.subnet_id,
+            placement_group=opts.placement_group,
+            tenancy=tenancy,
+            ebs_optimized=ebs_optimized,
+            instance_initiated_shutdown_behavior=opts.instance_initiated_shutdown_behavior,
+            instance_profile_name=opts.instance_profile_name)
+            
+
+        time.sleep(10)  # AWS metadata eventual consistency tax.
+
+        while True:
+            for instance in reservation.instances:
+                if instance.state == 'running':
+                    continue
+                else:
+                    instance.update()
+                    time.sleep(3)
+                    break
+            else:
+                print("All {c} instances now running.".format(
+                    c=len(reservation.instances)))
+                break
+
+        master_instance = reservation.instances[0]
+        slave_instances = reservation.instances[1:]
+
+        connection.create_tags(
+            resource_ids=[master_instance.id],
+            tags={
+                'flintrock-role': 'master',
+                'Name': '{c}-master'.format(c=cluster_name)})
+        connection.create_tags(
+            resource_ids=[i.id for i in slave_instances],
+            tags={
+                'flintrock-role': 'slave',
+                'Name': '{c}-slave'.format(c=cluster_name)})
+
+        cluster_info = ClusterInfo(
+            name=cluster_name,
+            ssh_key_pair=generate_ssh_key_pair(),
+            master_host=master_instance.public_dns_name,
+            slave_hosts=[instance.public_dns_name for instance in slave_instances],
+            spark_scratch_dir='/mnt/spark',
+            spark_master_opts="")
+
+        # TODO: Abstract away. No-one wants to see this async shite here.
+        loop = asyncio.get_event_loop()
+
+        tasks = []
+        for instance in reservation.instances:
+            task = loop.run_in_executor(
+                executor=None,
+                callback=functools.partial(
+                    provision_ec2_node,
+                    modules=modules,
+                    host=instance.ip_address,
+                    identity_file=identity_file,
+                    cluster_info=cluster_info))
+            tasks.append(task)
+        loop.run_until_complete(asyncio.wait(tasks))
+        loop.close()
+
+        print("All {c} instances provisioned.".format(
+            c=len(reservation.instances)))
+
+        # --- This stuff here runs after all the nodes are provisioned. ---
+        with paramiko.client.SSHClient() as client:
+            client.load_system_host_keys()
+            client.set_missing_host_key_policy(paramiko.client.AutoAddPolicy())
+
+            client.connect(
+                username="ec2-user",
+                hostname=master_instance.public_dns_name,
+                key_filename=identity_file,
+                timeout=3)
+
+            for module in modules:
+                module.configure_master(
+                    ssh_client=client,
+                    cluster_info=cluster_info)
+
+            # Login to the master for manual inspection.
+            # TODO: Move to master_login() method.
+            # ret = subprocess.call(
+            #     """
+            #     set -x
+            #     ssh -o "StrictHostKeyChecking=no" \
+            #         -i {identity_file} \
+            #         ec2-user@{host}
+            #     """.format(
+            #         identity_file=shlex.quote(identity_file),
+            #         host=shlex.quote(master_instance.public_dns_name)),
+            #     shell=True)
+
+    except KeyboardInterrupt as e:
+        print("Exiting...")
+        sys.exit(1)
+    
+
 
 def launch_cluster(cluster_name, opts):
     """
     Create a new cluster. 
     """
-    print('[ Launching cluster: %s ]' % cluster_name)
 
-    if opts.zone:
-        zone_str = ' --zone ' + opts.zone
-    else:
-        zone_str = ''
+    print('[ Launching cluster: %s ]' % cluster_name)
+    conn = open_ec2_connection(opts)
 
     # Set up the network
-    setup_network(cluster_name, opts)
- 
-    # Start master nodes & slave nodes
-    cmds = []
-    cmds.append( COMMAND_PREFIX + ' instances create "' + cluster_name + '-master" --machine-type "' + opts.master_instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.full_control" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-md" --metadata startup-script-url=http://storage.googleapis.com/spark-gce/growroot.sh' + zone_str )
-    for i in xrange(opts.slaves):
-        cmds.append( COMMAND_PREFIX + ' instances create "' + cluster_name + '-slave' + str(i) + '" --machine-type "' + opts.slave_instance_type + '" --network "' + cluster_name + '-network" --maintenance-policy "MIGRATE" --scopes "https://www.googleapis.com/auth/devstorage.full_control" --image "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316" --boot-disk-type "' + opts.boot_disk_type + '" --boot-disk-size ' + opts.boot_disk_size + ' --boot-disk-device-name "' + cluster_name + '-s' + str(i) + 'd" --metadata startup-script-url=http://storage.googleapis.com/spark-gce/growroot.sh' + zone_str )
+    #security_groups = get_or_create_security_groups(cluster_name=opts.cluster_name, vpc_id=vpc_id)
+    (master_group, slave_group) = setup_network(conn, cluster_name, opts)
 
+    # Check if instances are already running in our groups
     print('[ Launching nodes ]')
-    run(cmds, parallelize = True)
-
+    #launch_ec2(conn, cluster_name, opts, security_groups)
+    launch_nodes(conn, cluster_name, master_group, slave_group, opts)
+    return
+ 
     # Wait some time for machines to bootup. We consider the cluster ready when
     # all hosts have been assigned an IP address.
     print('[ Waiting for cluster to enter into SSH-ready state ]')
@@ -463,29 +1181,75 @@ def destroy_cluster(cluster_name, opts):
     """
     print('[ Destroying cluster: %s ]'  % (cluster_name))
 
-    # Get cluster machines
-    (master_node, slave_nodes) = get_cluster_info(cluster_name, opts)
-    if (master_node is None) and (len(slave_nodes) == 0):
-        print('Command failed.  Could not find a cluster named "' + cluster_name + '".')
-        sys.exit(1)
+    conn = open_ec2_connection(opts)
+    (master_nodes, slave_nodes) = get_existing_cluster(conn, opts, cluster_name, die_on_error=False)
+    if any(master_nodes + slave_nodes):
+        print("The following instances will be terminated:")
+        for inst in master_nodes + slave_nodes:
+            print("> %s" % get_dns_name(inst, opts.private_ips))
+        print("ALL DATA ON ALL NODES WILL BE LOST!!")
 
-    cmds = []
-    for instance in [master_node] + slave_nodes:
-        cmds.append( COMMAND_PREFIX + ' instances delete ' + instance['host_name'] + ' --zone ' + instance['zone'] + ' --quiet' )
+    msg = "Are you sure you want to destroy the cluster {c}? (y/N) ".format(c=cluster_name)
+    response = input(msg)
 
-    print('Cluster %s with %d nodes will be deleted PERMANENTLY.  All data will be lost.' % (cluster_name, len(cmds)))
-    proceed = raw_input('Are you sure you want to proceed? (y/N) : ')
-    if proceed == 'y' or proceed == 'Y':
+    if response == "y":
+        print("Terminating master...")
+        for inst in master_nodes:
+            inst.terminate()
+            print("Terminating slaves...")
+        for inst in slave_nodes:
+            inst.terminate()
 
-        # Clean up scratch disks
-        cleanup_scratch_disks(cluster_name, opts, detach_first = True)
+        # Delete security groups as well
+        if opts.delete_groups:
+            group_names = [cluster_name + "-master", cluster_name + "-slaves"]
+            wait_for_cluster_state(
+                conn=conn,
+                opts=opts,
+                cluster_instances=(master_nodes + slave_nodes),
+                cluster_state='terminated'
+            )
+            print("Deleting security groups (this will take some time)...")
+            attempt = 1
+            while attempt <= 3:
+                print("Attempt %d" % attempt)
+                groups = [g for g in conn.get_all_security_groups() if g.name in group_names]
+                success = True
+                # Delete individual rules in all groups before deleting groups to
+                # remove dependencies between them
+                for group in groups:
+                    print("Deleting rules in security group " + group.name)
+                    for rule in group.rules:
+                        for grant in rule.grants:
+                            success &= group.revoke(ip_protocol=rule.ip_protocol,
+                                                    from_port=rule.from_port,
+                                                    to_port=rule.to_port,
+                                                    src_group=grant)
 
-        # Terminate the nodes
-        print('[ Destroying %d nodes ]' % len(cmds))
-        run(cmds, parallelize = True)
+                # Sleep for AWS eventual-consistency to catch up, and for instances
+                # to terminate
+                time.sleep(30)  # Yes, it does have to be this long :-(
+                for group in groups:
+                    try:
+                        # It is needed to use group_id to make it work with VPC
+                        conn.delete_security_group(group_id=group.id)
+                        print("Deleted security group %s" % group.name)
+                    except boto.exception.EC2ResponseError:
+                        success = False
+                        print("Failed to delete security group %s" % group.name)
 
-        # Delete the network
-        delete_network(cluster_name, opts)
+                # Unfortunately, group.revoke() returns True even if a rule was not
+                # deleted, so this needs to be rerun if something fails
+                if success:
+                    break
+
+                attempt += 1
+
+            if not success:
+                print("Failed to delete all security groups after 3 tries.")
+                print("Try re-running in a few minutes.")
+            
+
     else:
         print("\nExiting without deleting cluster %s." % (cluster_name))
         sys.exit(0)
@@ -964,11 +1728,15 @@ def parse_args():
         "-i", "--identity-file", default = os.path.join(homedir, ".ssh", "google_compute_engine"),
         help="SSH private key file to use for logging into instances")
     parser.add_option(
-        "-t", "--slave-instance-type", default="n1-highmem-16",
-        help="Type of instance to launch (default: n1-highmem-16).")
+        "-t", "--slave-instance-type", default="g2.8xlarge",
+        help="Type of instance to launch (default: g2.8xlarge).")
     parser.add_option(
-        "-m", "--master-instance-type", default="n1-highmem-16",
-        help="Master instance type (default: n1-highmem-16)")
+        "-m", "--master-instance-type", default="g2.8xlarge",
+        help="Master instance type (default: g2.8xlarge)")
+    parser.add_option(
+        "-a", "--ami", default="ami-8ba3d3ee",
+        help="Amazon Machine Image ID to use")
+    
     # This option is not yet fully implemented -broxton
     #
     #    parser.add_argument("--preemptible",
@@ -986,12 +1754,76 @@ def parse_args():
     parser.add_option(
         "--scratch-disk-size", default="256GB",
         help="The size of the boot disk.  Run \'gcloud compute disk-types list\' to see your options.")
+
     parser.add_option(
-        "-p", "--project",
-        help="EC2 project to target when launching instances ( you can omit this argument if you set a default with \'gcloud config set project [project-name]\'")
+        "-r", "--region", default="us-east-1",
+        help="AWS region to target when launching instances ( you can omit this argument if you set a default with \'aws configure\'")
     parser.add_option(
-        "-z", "--zone", default="us-central1-b",
-        help="EC2 zone to target when launching instances ( you can omit this argument if you set a default with \'gcloud config set compute/zone [zone-name]\'")
+        "-z", "--zone", default="",
+        help="AWS zone to target when launching instances (default: picks one at random)")
+
+    parser.add_option(
+        "--ebs-vol-size", metavar="SIZE", type="int", default=0,
+        help="Size (in GB) of each EBS volume.")
+    parser.add_option(
+        "--ebs-vol-type", default="standard",
+        help="EBS volume type (e.g. 'gp2', 'standard').")
+    parser.add_option(
+        "--ebs-vol-num", type="int", default=1,
+        help="Number of EBS volumes to attach to each node as /vol[x]. " +
+        "The volumes will be deleted when the instances terminate. " +
+        "Only possible on EBS-backed AMIs. " +
+        "EBS volumes are only attached if --ebs-vol-size > 0. " +
+        "Only support up to 8 EBS volumes.")
+
+    parser.add_option(
+        "--spot-price", metavar="PRICE", type="float",
+        help="If specified, launch slaves as spot instances with the given " +
+        "maximum price (in dollars)")
+    parser.add_option(
+        "--placement-group", type="string", default=None,
+        help="Which placement group to try and launch " +
+        "instances into. Assumes placement group is already " +
+        "created.")
+    
+    parser.add_option(
+        "--delete-groups", action="store_true", default=False,
+        help="When destroying a cluster, delete the security groups that were created")
+    parser.add_option(
+        "-u", "--user", default="root",
+        help="The SSH user you want to connect as (default: %default)")
+
+    parser.add_option(
+        "--subnet-id", default=None,
+        help="VPC subnet to launch instances in")
+    parser.add_option(
+        "--vpc-id", default=None,
+        help="VPC to launch instances in")
+    parser.add_option(
+        "--private-ips", action="store_true", default=False,
+        help="Use private IPs for instances rather than public if VPC/subnet " +
+        "requires that.")
+    parser.add_option(
+        "--user-data", type="string", default="",
+        help="Path to a user-data file (most AMIs interpret this as an initialization script)")
+    parser.add_option(
+        "--authorized-address", type="string", default="0.0.0.0/0",
+        help="Address to authorize on created security groups (default: %default)")
+    parser.add_option(
+        "--additional-security-group", type="string", default="",
+        help="Additional security group to place the machines in")
+    parser.add_option(
+        "--additional-tags", type="string", default="",
+        help="Additional tags to set on the machines; tags are comma-separated, while name and " +
+        "value are colon separated; ex: \"Task:MySparkProject,Env:production\"")
+    parser.add_option(
+        "--instance-initiated-shutdown-behavior", default="stop",
+        choices=["stop", "terminate"],
+        help="Whether instances should terminate when shut down or just stop")
+    parser.add_option(
+        "--instance-profile-name", default=None,
+        help="IAM profile name to launch instances under")
+    
     parser.add_option("--verbose", type = int, default = 0,
                       help="Set debugging level (0 - minimal, 1 - some, 2 - a lot).")
     parser.add_option("--ssh-tunnel", default=None,
@@ -1018,9 +1850,6 @@ def parse_args():
     global VERBOSE
     VERBOSE = opts.verbose
 
-    global COMMAND_PREFIX
-    COMMAND_PREFIX = get_command_prefix(opts)
-        
     try:
         (action, cluster_name, optional_arg) = args
         return (opts, action, cluster_name, optional_arg)
@@ -1043,8 +1872,11 @@ def mosh_cluster(cluster_name, opts):
 def ssh_cluster(cluster_name, opts):
     import subprocess
 
-    (master_node, slave_nodes) = get_cluster_info(cluster_name, opts)
-    if (master_node is None) and (len(slave_nodes) == 0):
+    conn = open_ec2_connection(opts)
+    (master_nodes, slave_nodes) = get_existing_cluster(conn, opts, cluster_name, die_on_error=False)
+
+    # Check to see if the cluster exists
+    if not any(master_nodes + slave_nodes):
         print('Command failed.  Could not find a cluster named "' + cluster_name + '".')
         sys.exit(1)
 
@@ -1057,13 +1889,13 @@ def ssh_cluster(cluster_name, opts):
     if opts.ssh_tunnel is not None:
         ssh_ports = opts.ssh_tunnel.split(":")
         if len(ssh_ports) != 2:
-            print("\nERROR: Could not parse arguments to \'--ssh-port-forwarding\'.")
+            print("\nERROR: Could not parse arguments to \'--ssh-tunnel\'.")
             print("       Be sure you use the syntax \'local_port:remote_port\'")
             sys.exit(1)
         print ("\nSSH port forwarding requested.  Remote port " + ssh_ports[1] +
                " will be accessible at http://localhost:" + ssh_ports[0] + '\n')
         try:
-            cmd = COMMAND_PREFIX + ' ssh ' + master_node['host_name'] + ' --ssh-flag="-L 8890:127.0.0.1:8888"'
+            cmd = 'ssh ' + master_nodes[0].dns_name + ' --ssh-flag="-L 8890:127.0.0.1:8888"'
             subprocess.check_call(shlex.split(cmd))
         except subprocess.CalledProcessError:
             print("\nERROR: Could not establish ssh connection with port forwarding.")
@@ -1072,8 +1904,15 @@ def ssh_cluster(cluster_name, opts):
             sys.exit(1)
 
     else:
-        cmd = COMMAND_PREFIX + ' ssh ' + master_node['host_name']
-        subprocess.check_call(shlex.split(cmd))
+        print("Open SSH connection to", master_nodes[0].dns_name)
+        #cmd = 'ssh ' + opts.user + "@" + master_nodes[0].dns_name
+        #subprocess.check_call(shlex.split(cmd))
+        ret = subprocess.call([
+            'ssh',
+            '-o', 'StrictHostKeyChecking=no',
+            '-i', opts.identity_file,
+            'ec2-user@{h}'.format(h=master_nodes[0].dns_name)])
+        
 
 def sshfs_cluster(cluster_name, opts, optional_arg):
 
