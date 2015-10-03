@@ -13,26 +13,29 @@
 # limitations under the License.
 
 from setuptools import setup
-import spark_gce
+import brood
 
 import fnmatch
 import os
 
 support_files = []
-for root, dirnames, filenames in os.walk('spark_gce/support_files'):
+for root, dirnames, filenames in os.walk('brood/support_files_gce'):
+    for filename in fnmatch.filter(filenames, '*'):
+        support_files.append(os.path.join(root, filename)[10:])
+for root, dirnames, filenames in os.walk('brood/support_files_ec2'):
     for filename in fnmatch.filter(filenames, '*'):
         support_files.append(os.path.join(root, filename)[10:])
 
 setup(
-    name='spark-gce',
-    packages=['spark_gce'],
+    name='brood',
+    packages=['brood'],
     version=str(spark_gce.__version__),
-    description='This script helps you create a Spark cluster on Google Compute Engine.',
+    description='This script helps you create a Spark cluster on Google Compute Engine or Amazon EC2.',
     author='Michael Broxton',
     author_email='broxton@gmail.com',
-    url='https://github.com/broxtronix/spark-gce',
-    download_url = 'https://github.com/broxtronix/spark-gce/tarball/1.0.6',
-    scripts = ['bin/spark-gce'],
-    package_data = {'spark_gce': support_files},
+    url='https://github.com/broxtronix/brood',
+    download_url = 'https://github.com/broxtronix/brood/tarball/1.1.0',
+    scripts = ['bin/brood'],
+    package_data = {'brood': support_files},
     install_requires=['boto']
 )

@@ -1,0 +1,67 @@
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+
+<!-- Put site-specific property overrides in this file. -->
+
+<configuration>
+
+  <property>
+    <name>hadoop.tmp.dir</name>
+    <value>/mnt/ephemeral-hdfs</value>
+  </property>
+
+  <property>
+    <name>fs.default.name</name>
+    <value>hdfs://{{active_master}}:9000</value>
+  </property>
+
+  <property>
+    <name>io.file.buffer.size</name>
+    <value>65536</value>
+  </property>
+
+  <property>
+    <name>dfs.client.read.shortcircuit</name>
+    <value>false</value>
+  </property>
+
+  <property>
+    <name>dfs.client.read.shortcircuit.skip.checksum</name>
+    <value>false</value>
+  </property>
+
+  <property>
+    <name>dfs.domain.socket.path</name>
+    <value>/var/run/hadoop-hdfs/dn._PORT</value>
+  </property>
+
+  <property>
+    <name>dfs.client.file-block-storage-locations.timeout</name>
+    <value>3000</value>
+  </property>
+
+  <property>
+    <name>fs.tachyon.impl</name>
+    <value>tachyon.hadoop.TFS</value>
+  </property>
+
+  <property>
+    <name>fs.gs.impl</name>
+    <value>com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem</value>
+    <description>The FileSystem for gs: (GCS) uris.</description>
+  </property>
+
+  <property>
+    <name>fs.AbstractFileSystem.gs.impl</name>
+    <value>com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS</value>
+    <description>
+      The AbstractFileSystem for gs: (GCS) uris. Only necessary for use with Hadoop 2.
+    </description>
+  </property>
+
+  <property>
+    <name>fs.gs.project.id</name>
+    <value>{{google-project-id}}</value>
+  </property>
+
+</configuration>
