@@ -50,10 +50,6 @@ if __name__ == "__main__":
     from vapor.ec2 import check_aws
     check_aws(cluster_name, opts)
 
-    # Make sure ssh is correctly configured
-    from vapor.ec2 import check_ssh_config
-    check_ssh_config(cluster_name, opts)
-
     # Launch the cluster
     if action == "launch":
         from vapor.ec2 import launch_cluster

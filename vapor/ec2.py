@@ -24,6 +24,7 @@ import sys
 import time
 import shlex
 import json
+import functools
 import itertools
 from datetime import datetime
 from sys import stderr
@@ -40,9 +41,9 @@ COMMAND_PREFIX = None
 
 # Determine the path of the ec2.py file. We assume that all of the
 # templates and auxillary shell scripts are located here as well.
-SPARK_EC2_PATH =  os.path.dirname(os.path.realpath(__file__))
+VAPOR_PATH =  os.path.dirname(os.path.realpath(__file__))
 
-if not os.path.exists(os.path.join(SPARK_EC2_PATH, os.path.join("support_files_ec2", "templates"))):
+if not os.path.exists(os.path.join(VAPOR_PATH, os.path.join("support_files_ec2", "templates"))):
     raise Exception("There was an error locating installation support files. Spark EC2 is not installed properly.  Please re-install.")
 
 
@@ -123,60 +124,6 @@ def get_num_disks(instance_type):
               % instance_type, file=stderr)
         return 1
 
-def wait_for_cluster_state(conn, opts, cluster_instances, cluster_state):
-    """
-    Wait for all the instances in the cluster to reach a designated state.
-
-    cluster_instances: a list of boto.ec2.instance.Instance
-    cluster_state: a string representing the desired state of all the instances in the cluster
-           value can be 'ssh-ready' or a valid value from boto.ec2.instance.InstanceState such as
-           'running', 'terminated', etc.
-           (would be nice to replace this with a proper enum: http://stackoverflow.com/a/1695250)
-    """
-    sys.stdout.write(
-        "Waiting for cluster to enter '{s}' state.".format(s=cluster_state)
-    )
-    sys.stdout.flush()
-
-    start_time = datetime.now()
-    num_attempts = 0
-
-    while True:
-        time.sleep(5 * num_attempts)  # seconds
-
-        for i in cluster_instances:
-            i.update()
-
-        max_batch = 100
-        statuses = []
-        for j in range(0, len(cluster_instances), max_batch):
-            batch = [i.id for i in cluster_instances[j:j + max_batch]]
-            statuses.extend(conn.get_all_instance_status(instance_ids=batch))
-
-        if cluster_state == 'ssh-ready':
-            if all(i.state == 'running' for i in cluster_instances) and \
-               all(s.system_status.status == 'ok' for s in statuses) and \
-               all(s.instance_status.status == 'ok' for s in statuses) and \
-               is_cluster_ssh_available(cluster_instances, opts):
-                break
-        else:
-            if all(i.state == cluster_state for i in cluster_instances):
-                break
-
-        num_attempts += 1
-
-        sys.stdout.write(".")
-        sys.stdout.flush()
-
-    sys.stdout.write("\n")
-
-    end_time = datetime.now()
-    print("Cluster is now in '{s}' state. Waited {t} seconds.".format(
-        s=cluster_state,
-        t=(end_time - start_time).seconds
-    ))
-
-
 # Gets a list of zones to launch instances in
 def get_zones(conn, opts):
     if opts.zone == 'all':
@@ -246,8 +193,8 @@ def run_subprocess(cmds, result_queue):
 
     # Execute commands in serial
     for cmd in cmds:
-        if VERBOSE >= 3:
-            print("[CMD] " + cmd)
+        if VERBOSE >= 1 and not ("ssh -i" in cmd) and not ("scp -i" in cmd):
+            print("  CMD [local] " + cmd)
         child = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         stdout = child.communicate()[0]
         return_code = child.returncode
@@ -258,8 +205,8 @@ def run_subprocess(cmds, result_queue):
         else:
             result_queue.put( (return_code, cmd, None) )
             
-def run(cmds, parallelize = False, terminate_on_failure = True):
-    """Run commands in serial or in parallel.
+def run_local(cmds, parallelize = False, terminate_on_failure = True):
+    """Run commands in serial or in parallel on the local machine.
 
     If cmds is a single command, it will run the command.
     
@@ -288,19 +235,7 @@ def run(cmds, parallelize = False, terminate_on_failure = True):
     # fire off a ridiculous number of them (up to 64, and then we relent
     # and start to allow some commands to finish before starting others).
     num_threads = min(len(cmds), 64)
-        
-    # For debugging purposes (if VERBOSE is >= 2), print the commands we are
-    # about to execute.
-    if VERBOSE >= 2:
-        if isinstance(cmds[0], list):
-            for cmd_group in cmds:
-                print("[ Command Group (will execute in parallel on %d threads) ]" % (num_threads))
-                for cmd in cmd_group:
-                    print("  CMD: ", cmd)
-        else:
-            for cmd in cmds:
-                print("  CMD: ", cmd)
-        
+                
     if not parallelize:
 
         # Run commands serially
@@ -335,58 +270,69 @@ def run(cmds, parallelize = False, terminate_on_failure = True):
         print("\nFirst failed command:\n")
         print(failed_cmds[0])
         print("\nCommand output:\n")
-        print(failed_stdout[0])
+        print(failed_stdout[0].decode("utf8").rstrip('\n'))
         print("******************************************************************************************")
         sys.exit(1)
     else:
         return num_failed
-
-def check_ssh_config(cluster_name, opts):
-    '''This function checks to make sure that the user's ssh keys are set up to
-    access EC2 instances without an interactive password prompt.
-    '''
-    
-    # First, check to make sure the user's ssh keys for Google compute engine
-    # exist and ssh-agent is running.
-    if not os.path.exists(os.path.expanduser("~/.ssh/google_compute_engine")):
-        print("ERROR: Your SSH keys for google compute engine (~/.ssh/google_compute_engine) do not exist.  Please generate them using \"ssh-keygen -t rsa -f $HOME/.ssh/google_compute_engine\"")
-        sys.exit(1)
-
-    # Check to see if the key is encrypted, and whether it has been added to the
-    # user's ssh keychain.
-    import subprocess
-    is_encrypted = len(subprocess.Popen("grep ENCRYPTED $HOME/.ssh/google_compute_engine", shell=True, stdout=subprocess.PIPE).stdout.read()) > 0
-    is_active = len(subprocess.Popen("ssh-add -L | grep $HOME/.ssh/google_compute_engine", shell=True, stdout=subprocess.PIPE).stdout.read()) > 0
-        
-    if VERBOSE > 0:
-        print("[ SSH keys (checking ~/.ssh/google_compute_engine) ]")
-        print("  Encrypted: ", is_encrypted)
-        print("  Added to ssh keychain: ", is_active)
-        print("")
-
-    # For encrypted keys, we need to make sure ssh-agent is running, and the key has been added.
-    if is_encrypted:
-
-        # Check whether ssh-agent is running.  We check both for the environment variable, and
-        # we make sure that the variable points to a valid SSH auth socket. 
-        ssh_auth_sock = os.environ.get("SSH_AUTH_SOCK")
-        if not ssh_auth_sock or not os.path.exists(ssh_auth_sock):
-            print("ERROR: You do not appear to have ssh-agent running.  You must be running ssh-agent in order to use spark-gce.  You can start it and then try again:")
-            print("")
-            print("  eval $(ssh-agent)")
-            print("  ssh-add ~/.ssh/google_compute_engine")
-            print("")
-            sys.exit(1)
-        
-        if not is_active:
-            print("ERROR: Your google compute engine key (~/.ssh/google_compute_engine) appears to be password protected, but has not been added to your active ssh keychain.  Please add it and try again:")
-            print("")
-            print("  ssh-add ~/.ssh/google_compute_engine")
-            print("")
-            sys.exit(1)
-
             
-def ssh_wrap(host, identity_file, cmds, group = False):
+# def ssh_wrap(host, cmds, opts, group = False):
+#     '''Given a command to run on a remote host, this function wraps the command in
+#     the appropriate ssh invocation that can be run on the local host to achieve
+#     the desired action on the remote host. This can then be passed to the run()
+#     function to execute the command on the remote host.
+
+#     This function can take a single command or a list of commands, and will
+#     return a list of ssh-wrapped commands. However, if group = True, the list
+#     of commands will be combined via the && shell operator and sent in a single
+#     ssh command.
+#     '''
+
+#     if not isinstance(cmds, list):
+#         cmds = [ cmds ]
+
+#     for cmd in cmds:
+#         if VERBOSE >= 1: print('  SSH [{h}]: {c}'.format(h = host.dns_name, c = cmd))
+
+#     # Group commands using && to reduce the number of SSH commands that are
+#     # executed.  This can speed things up on high latency connections.
+#     if group == True:
+#         cmds = [ ' && '.join(cmds) ]
+
+#     username = opts.user
+#     result = []
+#     for cmd in cmds:
+#         if host.ip_address is None:
+#             print("Error: attempting to ssh into machine instance \"%s\" without a public IP address.  Exiting." % (host.dns_name))
+#             sys.exit(1)
+#         ssh_cmd = ('ssh -i {i} -o ConnectTimeout=900 -o BatchMode=yes -o ServerAliveInterval=60 ' +
+#                    '-o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no ' +
+#                    '{u}@{host} \'{cmd}\'' ).format(i = opts.identity_file, u = opts.user, host = host.dns_name, cmd = cmd)
+#         result.append(ssh_cmd)
+#     return result
+
+def scp_wrap(src_file, dst_file, opts):
+    if VERBOSE >= 1: print('  SCP {src} {dst}'.format(src = src_file, dst = dst_file))
+
+    cmd = ("scp -i {i} -o ConnectTimeout=900 -o BatchMode=yes -o ServerAliveInterval=60 " +
+           "-o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no " +
+           "{src} {dst}").format(i = opts.identity_file, src = src_file, dst = dst_file)
+    return cmd
+
+def deploy_template(opts, node, template_name, root = "/opt"):
+
+    if VERBOSE >= 1:
+        print("  TEMPLATE: ", template_name)
+
+    run_local(scp_wrap(VAPOR_PATH + "/support_files_ec2/templates/" + template_name,
+                       "{u}@{h}:{root}/{template_name}".format(u = opts.user, h = node.dns_name,
+                                                               root = root, template_name = template_name),
+                       opts), parallelize = True)
+
+# -------------------------------------------------------------------------------------
+
+def run_ssh(host, cmds, opts, stop_on_failure = True):
+
     '''Given a command to run on a remote host, this function wraps the command in
     the appropriate ssh invocation that can be run on the local host to achieve
     the desired action on the remote host. This can then be passed to the run()
@@ -401,34 +347,105 @@ def ssh_wrap(host, identity_file, cmds, group = False):
     if not isinstance(cmds, list):
         cmds = [ cmds ]
 
+    client = ssh_open(host, opts)
     for cmd in cmds:
-        if VERBOSE >= 1: print('  SSH: ' + host['host_name'] + '\t', cmd)
+        exit_status = ssh_command(client, cmd, stop_on_failure = stop_on_failure)
 
-    # Group commands using && to reduce the number of SSH commands that are
-    # executed.  This can speed things up on high latency connections.
-    if group == True:
-        cmds = [ ' && '.join(cmds) ]
+        # If stop_on_failure = False, and an error occured, we pass it up the
+        # chain. Otherwise, an exception will already have been generated by
+        # ssh_command().
+        if exit_status:
+            return exit_status
 
+    # Everything ran fine.  Return exit_status = 0
+    return 0
+        
 
-    username = os.environ["USER"]
-    result = []
-    for cmd in cmds:
-        if host['external_ip'] is None:
-            print("Error: attempting to ssh into machine instance \"%s\" without a public IP address.  Exiting." % (host["host_name"]))
-            sys.exit(1)
-        result.append( COMMAND_PREFIX + ' ssh --ssh-flag="-o ConnectTimeout=900" --ssh-flag="-o BatchMode=yes" --ssh-flag="-o ServerAliveInterval=60" --ssh-flag="-o UserKnownHostsFile=/dev/null" --ssh-flag="-o CheckHostIP=no" --ssh-flag="-o StrictHostKeyChecking=no" --ssh-flag="-o LogLevel=quiet" ' + host['host_name'] + ' --command \'' + cmd + '\'' + " --zone " + host['zone'])
-    return result
+def ssh_command(ssh_client, cmd, stop_on_failure = True):
 
-def deploy_template(opts, node, template_name, root = "/opt"):
+    host = ssh_client.get_transport().getpeername()[0]
 
-    cmd = COMMAND_PREFIX + " copy-files " + SPARK_EC2_PATH + "/support_files/templates/" + template_name + " " + node['host_name'] + ":" + root + "/" + template_name + " --zone " + node['zone']
     if VERBOSE >= 1:
-        print("  TEMPLATE: ", template_name)
+        print("  SSH [{h}]: {c}".format(h=host, c=cmd))
+    
+    stdin, stdout, stderr = ssh_client.exec_command(cmd, get_pty=True)
+    exit_status = stdout.channel.recv_exit_status()
 
-    # Run the command
-    run(cmd)
+    if exit_status and stop_on_failure:
+        # TODO: Return a custom exception that includes the return code.
+        # See: https://docs.python.org/3/library/subprocess.html#subprocess.check_output
+        print("\n******************************************************************************************")
+        print("\nSSH remote command failed:", cmd)
+        print("\nCommand stdout:\n")
+        print(stdout.read().decode("utf8").rstrip('\n'))
+        print("\nCommand stderr:\n")
+        print(stderr.read().decode("utf8").rstrip('\n'))
+        print("******************************************************************************************")
+        sys.exit(1)
 
-# -------------------------------------------------------------------------------------
+    return exit_status
+        
+        
+
+def async_execute(async_fns):
+
+    import asyncio
+    loop = asyncio.get_event_loop()
+    tasks = []
+    for fn in async_fns:
+        task = loop.run_in_executor(executor=None, callback=fn)
+        tasks.append(task)
+    loop.run_until_complete(asyncio.wait(tasks))
+    
+
+def wait_for_node(node, conn, opts, retry_delay, max_retries): 
+    import paramiko
+    import socket
+    
+
+    nretry = 0
+    while True:
+        print("  Waiting for {h}".format(h=node))
+        if nretry > max_retries:
+            print("  [{h}] host never rensponded.".format(h=node.dns_name))
+            raise SystemExit
+        try:
+            retval = run_ssh(node, "echo", opts)
+            if retval > 0:
+                time.sleep(retry_delay)
+                nretry += 1
+                continue
+            else:
+                print("  [{h}] SSH online.".format(h=node.dns_name))
+                break
+        except socket.timeout as e:
+            time.sleep(retry_delay)
+            nretry += 1
+        except socket.error as e:
+            time.sleep(retry_delay)
+            nretry += 1
+        except Exception as e:
+            time.sleep(retry_delay)
+            nretry += 1
+
+def wait_for_cluster(cluster_name, opts, retry_delay = 10, max_retries = 30):
+    import time
+
+    print('[ Waiting for cluster to start up ]')
+
+    conn = open_ec2_connection(opts)
+    (master_nodes, slave_nodes) = get_existing_cluster(conn, opts, cluster_name, die_on_error=False)
+
+    # Wait for each node by attempting to connect with ssh, but run these checks
+    # in parallel so that they are completed more quickly.
+    cmds = []
+    for node in master_nodes + slave_nodes:
+        cmds.append(functools.partial(wait_for_node, node = node, conn = conn, opts = opts,
+                                      retry_delay = retry_delay, max_retries = max_retries))
+    async_execute( cmds )
+
+    return (master_nodes[0], slave_nodes)
+
 
 def get_command_prefix(opts):
     command_prefix = 'gcloud compute'
@@ -443,47 +460,11 @@ def check_aws(cluster_name, opts):
         output = subprocess.check_output(cmd, shell=True)
         if VERBOSE >= 1:
             print('[ Verifying aws command line tools ]')
-            print(output)
+            print(output.decode('utf-8'))
         
     except OSError:
         print("%s executable not found. \n# Make sure aws command line tools are installed and authenticated\nPlease follow instructions at https://aws.amazon.com/cli/" % myexec)
         sys.exit(1)
-
-def wait_for_cluster(cluster_name, opts, retry_delay = 10, num_retries = 12):
-    import time
-
-    # Query for instance info a second time.  Once instances start, we should get IP addresses.
-    (master_node, slave_nodes) = get_cluster_info(cluster_name, opts)
-
-    retries = 0
-    cluster_is_ready = False
-    while True:
-        cluster_is_ready = True
-        cmds = []
-        for node in [master_node] + slave_nodes:
-            # Check if the node has a public IP assigned yet. If not, the node
-            # is still launching.
-            if node['external_ip'] is None:
-                cluster_is_ready = False
-                break
-            else:
-                # If the cluster node has an IP, then let's try to connect over
-                # ssh.  If that fails, the node is still not ready.
-                cmds.append(ssh_wrap(node, opts.identity_file, 'echo'))
-                
-        num_failed = run(cmds, terminate_on_failure = False)
-        if num_failed > 0:
-            cluster_is_ready = False
-    
-        if cluster_is_ready:
-            return (master_node, slave_nodes)
-        elif retries < num_retries:
-            print("  cluster was not ready.  retrying...")
-            time.sleep(retry_delay)
-            retries += 1
-        else:
-            print("Error: cluster took too long to start.")
-            sys.exit(1)
 
 def get_cluster_info(cluster_name, opts):
         
@@ -551,113 +532,6 @@ def get_or_make_group(conn, name, vpc_id):
     else:
         print("Creating security group " + name)
         return conn.create_security_group(name, "Spark EC2 group", vpc_id)
-
-# def get_or_create_security_groups(cluster_name, vpc_id) -> 'List[boto.ec2.securitygroup.SecurityGroup]':
-#     """
-#     If they do not already exist, create all the security groups needed for a
-#     Flintrock cluster.
-#     """
-#     SecurityGroupRule = namedtuple(
-#         'SecurityGroupRule', [
-#             'ip_protocol',
-#             'from_port',
-#             'to_port',
-#             'src_group',
-#             'cidr_ip'])
-#     # TODO: Make these into methods, since we need this logic (though simple)
-#     #       in multiple places. (?)
-#     flintrock_group_name = 'flintrock'
-#     cluster_group_name = 'flintrock-' + cluster_name
-
-#     search_results = connection.get_all_security_groups(
-#         filters={
-#             'group-name': [flintrock_group_name, cluster_group_name]
-#         })
-#     flintrock_group = next((sg for sg in search_results if sg.name == flintrock_group_name), None)
-#     cluster_group = next((sg for sg in search_results if sg.name == cluster_group_name), None)
-
-#     if not flintrock_group:
-#         flintrock_group = connection.create_security_group(
-#             name=flintrock_group_name,
-#             description="flintrock base group",
-#             vpc_id=vpc_id)
-
-#     # Rules for the client interacting with the cluster.
-#     flintrock_client_ip = (urllib.request.urlopen('http://checkip.amazonaws.com/').read().decode('utf-8').strip())
-#     flintrock_client_cidr = '{ip}/32'.format(ip=flintrock_client_ip)
-
-#     client_rules = [
-#         SecurityGroupRule(
-#             ip_protocol='tcp',
-#             from_port=22,
-#             to_port=22,
-#             cidr_ip=flintrock_client_cidr,
-#             src_group=None),
-#         SecurityGroupRule(
-#             ip_protocol='tcp',
-#             from_port=8080,
-#             to_port=8081,
-#             cidr_ip=flintrock_client_cidr,
-#             src_group=None),
-#         SecurityGroupRule(
-#             ip_protocol='tcp',
-#             from_port=4040,
-#             to_port=4040,
-#             cidr_ip=flintrock_client_cidr,
-#             src_group=None)
-#     ]
-
-#     # TODO: Don't try adding rules that already exist.
-#     # TODO: Add rules in one shot.
-#     for rule in client_rules:
-#         try:
-#             flintrock_group.authorize(**vars(rule))
-#         except boto.exception.EC2ResponseError as e:
-#             if e.error_code != 'InvalidPermission.Duplicate':
-#                 print("Error adding rule: {r}".format(r=rule))
-#                 raise
-
-#     # Rules for internal cluster communication.
-#     if not cluster_group:
-#         cluster_group = connection.create_security_group(
-#             name=cluster_group_name,
-#             description="Flintrock cluster group",
-#             vpc_id=vpc_id)
-
-#     cluster_rules = [
-#         SecurityGroupRule(
-#             ip_protocol='icmp',
-#             from_port=-1,
-#             to_port=-1,
-#             src_group=cluster_group,
-#             cidr_ip=None),
-#         SecurityGroupRule(
-#             ip_protocol='tcp',
-#             from_port=0,
-#             to_port=65535,
-#             src_group=cluster_group,
-#             cidr_ip=None),
-#         SecurityGroupRule(
-#             ip_protocol='udp',
-#             from_port=0,
-#             to_port=65535,
-#             src_group=cluster_group,
-#         cidr_ip=None)
-#     ]
-
-#     # TODO: Don't try adding rules that already exist.
-#     # TODO: Add rules in one shot.
-#     for rule in cluster_rules:
-#         try:
-#             cluster_group.authorize(**vars(rule))
-#         except boto.exception.EC2ResponseError as e:
-#             if e.error_code != 'InvalidPermission.Duplicate':
-#                 print("Error adding rule: {r}".format(r=rule))
-#                 raise
-
-#     return [flintrock_group, cluster_group]
-
-
     
 def setup_network(conn, cluster_name, opts):
     print('[ Setting up Network & Firewall Entries ]')
@@ -684,6 +558,7 @@ def setup_network(conn, cluster_name, opts):
             master_group.authorize(ip_protocol='udp', from_port=0, to_port=65535,
                                    src_group=slave_group)
         master_group.authorize('tcp', 22, 22, authorized_address)
+        master_group.authorize('tcp', 7077, 7078, authorized_address)  # DELETME!!
         master_group.authorize('tcp', 8080, 8081, authorized_address)
         master_group.authorize('tcp', 18080, 18080, authorized_address)
         master_group.authorize('tcp', 19999, 19999, authorized_address)
@@ -729,7 +604,115 @@ def setup_network(conn, cluster_name, opts):
 
     return (master_group, slave_group)
 
-        
+
+def get_or_create_security_groups(cluster_name, vpc_id) -> 'List[boto.ec2.securitygroup.SecurityGroup]':
+    """
+    If they do not already exist, create all the security groups needed for a
+    Flintrock cluster.
+    """
+    SecurityGroupRule = namedtuple(
+        'SecurityGroupRule', [
+            'ip_protocol',
+            'from_port',
+            'to_port',
+            'src_group',
+            'cidr_ip'])
+    # TODO: Make these into methods, since we need this logic (though simple)
+    #       in multiple places. (?)
+    flintrock_group_name = 'flintrock'
+    cluster_group_name = 'flintrock-' + cluster_name
+
+    search_results = connection.get_all_security_groups(
+        filters={
+            'group-name': [flintrock_group_name, cluster_group_name]
+        })
+    flintrock_group = next((sg for sg in search_results if sg.name == flintrock_group_name), None)
+    cluster_group = next((sg for sg in search_results if sg.name == cluster_group_name), None)
+
+    if not flintrock_group:
+        flintrock_group = connection.create_security_group(
+            name=flintrock_group_name,
+            description="flintrock base group",
+            vpc_id=vpc_id)
+
+    # Rules for the client interacting with the cluster.
+    flintrock_client_ip = (
+        urllib.request.urlopen('http://checkip.amazonaws.com/')
+        .read().decode('utf-8').strip())
+    flintrock_client_cidr = '{ip}/32'.format(ip=flintrock_client_ip)
+
+    client_rules = [
+        SecurityGroupRule(
+            ip_protocol='tcp',
+            from_port=22,
+            to_port=22,
+            cidr_ip=flintrock_client_cidr,
+            src_group=None),
+        SecurityGroupRule(
+            ip_protocol='tcp',
+            from_port=8080,
+            to_port=8081,
+            cidr_ip=flintrock_client_cidr,
+            src_group=None),
+        SecurityGroupRule(
+            ip_protocol='tcp',
+            from_port=4040,
+            to_port=4040,
+            cidr_ip=flintrock_client_cidr,
+            src_group=None)
+    ]
+    
+    # TODO: Don't try adding rules that already exist.
+    # TODO: Add rules in one shot.
+    for rule in client_rules:
+        try:
+            flintrock_group.authorize(**vars(rule))
+        except boto.exception.EC2ResponseError as e:
+            if e.error_code != 'InvalidPermission.Duplicate':
+                print("Error adding rule: {r}".format(r=rule))
+                raise
+
+    # Rules for internal cluster communication.
+    if not cluster_group:
+        cluster_group = connection.create_security_group(
+            name=cluster_group_name,
+            description="Flintrock cluster group",
+            vpc_id=vpc_id)
+
+    cluster_rules = [
+        SecurityGroupRule(
+            ip_protocol='icmp',
+            from_port=-1,
+            to_port=-1,
+            src_group=cluster_group,
+            cidr_ip=None),
+        SecurityGroupRule(
+            ip_protocol='tcp',
+            from_port=0,
+            to_port=65535,
+            src_group=cluster_group,
+            cidr_ip=None),
+        SecurityGroupRule(
+            ip_protocol='udp',
+            from_port=0,
+            to_port=65535,
+            src_group=cluster_group,
+            cidr_ip=None)
+    ]
+
+    # TODO: Don't try adding rules that already exist.
+    # TODO: Add rules in one shot.
+    for rule in cluster_rules:
+        try:
+            cluster_group.authorize(**vars(rule))
+        except boto.exception.EC2ResponseError as e:
+            if e.error_code != 'InvalidPermission.Duplicate':
+                print("Error adding rule: {r}".format(r=rule))
+                raise
+
+    return [flintrock_group, cluster_group]
+
+
 # -------------------------------------------------------------------------------------
 #                      CLUSTER LAUNCH, DESTROY, START, STOP
 # -------------------------------------------------------------------------------------
@@ -739,8 +722,7 @@ def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
     Get the EC2 instances in an existing cluster if available.
     Returns a tuple of lists of EC2 instance objects for the masters and slaves.
     """
-    print("Searching for existing cluster {c} in region {r}...".format(
-          c=cluster_name, r=opts.region))
+    print("[ Searching for existing cluster {c} in region {r}...]".format( c=cluster_name, r=opts.region ))
 
     def get_instances(group_names):
         """
@@ -758,7 +740,7 @@ def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
     slave_instances = get_instances([cluster_name + "-slaves"])
 
     if any((master_instances, slave_instances)):
-        print("Found {m} master{plural_m}, {s} slave{plural_s}.".format(
+        print("  Found {m} master{plural_m}, {s} slave{plural_s}.".format(
               m=len(master_instances),
               plural_m=('' if len(master_instances) == 1 else 's'),
               s=len(slave_instances),
@@ -772,15 +754,10 @@ def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
     return (master_instances, slave_instances)
 
 
-def launch_nodes(conn, cluster_name, master_group, slave_group, opts):
-    if opts.identity_file is None:
-        print("ERROR: Must provide an identity file (-i) for ssh connections.", file=stderr)
-        sys.exit(1)
+def launch_nodes(cluster_name, master_group, slave_group, opts):
+    conn = open_ec2_connection(opts)
 
-    if opts.key_pair is None:
-        print("ERROR: Must provide a key pair name (-k) to use on instances.", file=stderr)
-        sys.exit(1)
-
+    # Launch nodes
     user_data_content = None
     if opts.user_data:
         with open(opts.user_data) as user_data_file:
@@ -845,7 +822,7 @@ def launch_nodes(conn, cluster_name, master_group, slave_group, opts):
                 placement=zone,
                 count=num_slaves_this_zone,
                 key_name=opts.key_pair,
-                security_group_ids=[slave_group.id] + additional_group_ids,
+                security_group_ids=[sg.id for sg in security_groups],
                 instance_type=opts.slave_instance_type,
                 block_device_map=block_map,
                 subnet_id=opts.subnet_id,
@@ -898,7 +875,7 @@ def launch_nodes(conn, cluster_name, master_group, slave_group, opts):
             if num_slaves_this_zone > 0:
                 slave_res = image.run(
                     key_name=opts.key_pair,
-                    security_group_ids=[slave_group.id] + additional_group_ids,
+                    security_group_ids=[sg.id for sg in security_groups],
                     instance_type=opts.slave_instance_type,
                     placement=zone,
                     min_count=num_slaves_this_zone,
@@ -932,7 +909,7 @@ def launch_nodes(conn, cluster_name, master_group, slave_group, opts):
             opts.zone = random.choice(conn.get_all_zones()).name
         master_res = image.run(
             key_name=opts.key_pair,
-            security_group_ids=[master_group.id] + additional_group_ids,
+            security_group_ids=[sg.id for sg in security_groups],
             instance_type=master_type,
             placement=opts.zone,
             min_count=1,
@@ -944,11 +921,11 @@ def launch_nodes(conn, cluster_name, master_group, slave_group, opts):
             instance_initiated_shutdown_behavior=opts.instance_initiated_shutdown_behavior,
             instance_profile_name=opts.instance_profile_name)
         
+        master_nodes = master_res.instances
         print("Launched master in %s, regid = %s" % (zone, master_res.id))
 
 
     # This wait time corresponds to SPARK-4983
-    print("Waiting for AWS to propagate instance metadata...")
     time.sleep(10)
 
     # Give the instances descriptive names and set additional tags
@@ -970,144 +947,6 @@ def launch_nodes(conn, cluster_name, master_group, slave_group, opts):
 
     # Return all the instances
     return (master_nodes, slave_nodes)
-        
-
-# def launch_ec2(connection, cluster_name, opts, security_groups):
-#     try:
-
-#         try:
-#             image = connection.get_all_images(image_ids=[opts.ami])[0]
-#         except:
-#             print("Could not find AMI " + opts.ami, file=stderr)
-#             sys.exit(1)
-
-#         # Create block device mapping so that we can add EBS volumes if asked to.
-#         # The first drive is attached as /dev/sds, 2nd as /dev/sdt, ... /dev/sdz
-#         from boto.ec2.blockdevicemapping import BlockDeviceMapping, BlockDeviceType, EBSBlockDeviceType
-#         block_map = BlockDeviceMapping()
-#         if opts.ebs_vol_size > 0:
-#             for i in range(opts.ebs_vol_num):
-#                 device = EBSBlockDeviceType()
-#                 device.size = opts.ebs_vol_size
-#                 device.volume_type = opts.ebs_vol_type
-#                 device.delete_on_termination = True
-#                 block_map["/dev/sd" + chr(ord('s') + i)] = device
-
-#         # AWS ignores the AMI-specified block device mapping for M3 (see SPARK-3342).
-#         if opts.slave_instance_type.startswith('m3.'):
-#             for i in range(get_num_disks(opts.slave_instance_type)):
-#                 dev = BlockDeviceType()
-#                 dev.ephemeral_name = 'ephemeral%d' % i
-#                 # The first ephemeral drive is /dev/sdb.
-#                 name = '/dev/sd' + string.letters[i + 1]
-#                 block_map[name] = dev
-
-#         reservation = connection.run_instances(
-#             image_id=opts.ami,
-#             min_count=(opts.slaves + 1),
-#             max_count=(opts.slaves + 1),
-#             block_device_map=block_map,
-#             key_name=opts.key_pair,
-#             instance_type=opts.master_instance_type,
-#             placement=opts.zone,
-#             security_group_ids=[sg.id for sg in security_groups],
-#             subnet_id=opts.subnet_id,
-#             placement_group=opts.placement_group,
-#             tenancy=tenancy,
-#             ebs_optimized=ebs_optimized,
-#             instance_initiated_shutdown_behavior=opts.instance_initiated_shutdown_behavior,
-#             instance_profile_name=opts.instance_profile_name)
-            
-
-#         time.sleep(10)  # AWS metadata eventual consistency tax.
-
-#         while True:
-#             for instance in reservation.instances:
-#                 if instance.state == 'running':
-#                     continue
-#                 else:
-#                     instance.update()
-#                     time.sleep(3)
-#                     break
-#             else:
-#                 print("All {c} instances now running.".format(
-#                     c=len(reservation.instances)))
-#                 break
-
-#         master_instance = reservation.instances[0]
-#         slave_instances = reservation.instances[1:]
-
-#         connection.create_tags(
-#             resource_ids=[master_instance.id],
-#             tags={
-#                 'flintrock-role': 'master',
-#                 'Name': '{c}-master'.format(c=cluster_name)})
-#         connection.create_tags(
-#             resource_ids=[i.id for i in slave_instances],
-#             tags={
-#                 'flintrock-role': 'slave',
-#                 'Name': '{c}-slave'.format(c=cluster_name)})
-
-#         cluster_info = ClusterInfo(
-#             name=cluster_name,
-#             ssh_key_pair=generate_ssh_key_pair(),
-#             master_host=master_instance.public_dns_name,
-#             slave_hosts=[instance.public_dns_name for instance in slave_instances],
-#             spark_scratch_dir='/mnt/spark',
-#             spark_master_opts="")
-
-#         # TODO: Abstract away. No-one wants to see this async shite here.
-#         loop = asyncio.get_event_loop()
-
-#         tasks = []
-#         for instance in reservation.instances:
-#             task = loop.run_in_executor(
-#                 executor=None,
-#                 callback=functools.partial(
-#                     provision_ec2_node,
-#                     modules=modules,
-#                     host=instance.ip_address,
-#                     identity_file=identity_file,
-#                     cluster_info=cluster_info))
-#             tasks.append(task)
-#         loop.run_until_complete(asyncio.wait(tasks))
-#         loop.close()
-
-#         print("All {c} instances provisioned.".format(
-#             c=len(reservation.instances)))
-
-#         # --- This stuff here runs after all the nodes are provisioned. ---
-#         with paramiko.client.SSHClient() as client:
-#             client.load_system_host_keys()
-#             client.set_missing_host_key_policy(paramiko.client.AutoAddPolicy())
-
-#             client.connect(
-#                 username="ec2-user",
-#                 hostname=master_instance.public_dns_name,
-#                 key_filename=identity_file,
-#                 timeout=3)
-
-#             for module in modules:
-#                 module.configure_master(
-#                     ssh_client=client,
-#                     cluster_info=cluster_info)
-
-#             # Login to the master for manual inspection.
-#             # TODO: Move to master_login() method.
-#             # ret = subprocess.call(
-#             #     """
-#             #     set -x
-#             #     ssh -o "StrictHostKeyChecking=no" \
-#             #         -i {identity_file} \
-#             #         ec2-user@{host}
-#             #     """.format(
-#             #         identity_file=shlex.quote(identity_file),
-#             #         host=shlex.quote(master_instance.public_dns_name)),
-#             #     shell=True)
-
-#     except KeyboardInterrupt as e:
-#         print("Exiting...")
-#         sys.exit(1)
     
 
 
@@ -1116,22 +955,27 @@ def launch_cluster(cluster_name, opts):
     Create a new cluster. 
     """
 
+    if opts.identity_file is None:
+        print("ERROR: Must provide an identity file (-i) for ssh connections.", file=stderr)
+        sys.exit(1)
+
+    if opts.key_pair is None:
+        print("ERROR: Must provide a key pair name (-k) to use on instances.", file=stderr)
+        sys.exit(1)
+
+    
     print('[ Launching cluster: %s ]' % cluster_name)
     conn = open_ec2_connection(opts)
 
     # Set up the network
-    #security_groups = get_or_create_security_groups(cluster_name=opts.cluster_name, vpc_id=vpc_id)
-    (master_group, slave_group) = setup_network(conn, cluster_name, opts)
+    #    (master_group, slave_group) = setup_network(conn, cluster_name, opts)
 
     # Check if instances are already running in our groups
     print('[ Launching nodes ]')
-    #launch_ec2(conn, cluster_name, opts, security_groups)
-    launch_nodes(conn, cluster_name, master_group, slave_group, opts)
-    return
+    launch_nodes(cluster_name, master_group, slave_group, opts)
  
     # Wait some time for machines to bootup. We consider the cluster ready when
     # all hosts have been assigned an IP address.
-    print('[ Waiting for cluster to enter into SSH-ready state ]')
     (master_node, slave_nodes) = wait_for_cluster(cluster_name, opts)
 
     # Generate SSH keys and deploy to workers and slaves
@@ -1144,15 +988,16 @@ def launch_cluster(cluster_name, opts):
     initialize_cluster(cluster_name, opts, master_node, slave_nodes)
 
     # Install, configure, and start ganglia
-    configure_ganglia(cluster_name, opts, master_node, slave_nodes)
-    
+#    configure_ganglia(cluster_name, opts, master_node, slave_nodes)
+       
     # Install and configure Hadoop
-    install_hadoop(cluster_name, opts, master_node, slave_nodes)
-    configure_and_start_hadoop(cluster_name, opts, master_node, slave_nodes)
+#    install_hadoop(cluster_name, opts, master_node, slave_nodes)
+#    configure_and_start_hadoop(cluster_name, opts, master_node, slave_nodes)
     
     # Install, configure and start Spark
     install_spark(cluster_name, opts, master_node, slave_nodes)
     configure_and_start_spark(cluster_name, opts, master_node, slave_nodes)
+    sys.exit(0)
 
     print("\n\n=======================================================")
     print("              Cluster \"%s\" is running" % (cluster_name))
@@ -1179,6 +1024,9 @@ def destroy_cluster(cluster_name, opts):
     msg = "Are you sure you want to destroy the cluster {c}? (y/N) ".format(c=cluster_name)
     response = input(msg)
 
+    # Clean up scratch disks
+    cleanup_scratch_disks(cluster_name, opts, master_nodes[0], slave_nodes)
+    
     if response == "y":
         print("Terminating master...")
         for inst in master_nodes:
@@ -1252,21 +1100,12 @@ def stop_cluster(cluster_name, opts, slaves_only = False):
     print('[ Stopping cluster: %s ]' % cluster_name)
 
     # Get cluster machines
-    (master_node, slave_nodes) = get_cluster_info(cluster_name, opts)
-    if (master_node is None) and (len(slave_nodes) == 0):
+    conn = open_ec2_connection(opts)
+    (master_nodes, slave_nodes) = get_existing_cluster(conn, opts, cluster_name, die_on_error=False)
+    if (len(master_nodes) == 0) or (len(slave_nodes) == 0):
         print('Command failed.  Could not find a cluster named "' + cluster_name + '".')
         sys.exit(1)
-
-    cmds = []
-
-    if slaves_only:
-        instance_list = slave_nodes
-    else:
-        instance_list = [master_node] + slave_nodes
-        
-    for instance in instance_list:
-        cmds.append( COMMAND_PREFIX + ' instances stop ' + instance['host_name'] + ' --zone ' + instance['zone'] )
-
+    
     # I can't decide if it is important to check with the user when stopping the cluster.  Seems
     # more convenient not to.  But I'm leaving this code in for now in case time shows that
     # it is important to include this confirmation step. -broxton
@@ -1276,10 +1115,18 @@ def stop_cluster(cluster_name, opts, slaves_only = False):
     #if proceed == 'y' or proceed == 'Y':
 
     print('[ Stopping nodes ]')
-    run(cmds, parallelize = True, terminate_on_failure = False)
+    for inst in slave_nodes:
+        inst.stop()
 
+    if not slaves_only:
+        for inst in master_nodes:
+            inst.stop()
+
+    # Give nodes a chance to shut down and umount disks (though this is not strictly necessary).
+    time.sleep(5)
+            
     # Clean up scratch disks
-    cleanup_scratch_disks(cluster_name, opts, detach_first = True, slaves_only = slaves_only)
+    cleanup_scratch_disks(cluster_name, opts, master_nodes[0], slave_nodes, detach_first = True, slaves_only = slaves_only)
 
     #else:
     #   print("\nExiting without stopping cluster %s." % (cluster_name))
@@ -1290,38 +1137,39 @@ def start_cluster(cluster_name, opts):
     """
     Start a cluster that is in the stopped state.
     """
+    if opts.identity_file is None:
+        print("ERROR: Must provide an identity file (-i) for ssh connections.", file=stderr)
+        sys.exit(1)
+
 
     print('[ Starting cluster: %s ]' % (cluster_name))
 
     # Get cluster machines
-    (master_node, slave_nodes) = get_cluster_info(cluster_name, opts)
-    if (master_node is None) and (len(slave_nodes) == 0):
+    conn = open_ec2_connection(opts)
+    (master_nodes, slave_nodes) = get_existing_cluster(conn, opts, cluster_name, die_on_error=False)
+    if (len(master_nodes) == 0) or (len(slave_nodes) == 0):
         print('Command failed.  Could not find a cluster named "' + cluster_name + '".')
         sys.exit(1)
 
-    cmds = []
-    for instance in [master_node] + slave_nodes:
-        cmds.append( COMMAND_PREFIX + ' instances start ' + instance['host_name'] + ' --zone ' + instance['zone'] )
-
     print('[ Starting nodes ]')
-    run(cmds, parallelize = True)
+    for inst in master_nodes + slave_nodes:
+        inst.start()
 
     # Wait some time for machines to bootup. We consider the cluster ready when
     # all hosts have been assigned an IP address.
-    print('[ Waiting for cluster to enter into SSH-ready state ]')
     (master_node, slave_nodes) = wait_for_cluster(cluster_name, opts)
 
-    # Set up ssh keys
+    # Generate SSH keys and deploy to workers and slaves
     deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes)
-
-    # Re-attach brand new scratch disks
+            
+    # Attach a new empty drive and format it
     attach_persistent_scratch_disks(cluster_name, opts, master_node, slave_nodes)
 
     # Install, configure, and start ganglia
-    configure_ganglia(cluster_name, opts, master_node, slave_nodes)
+#    configure_ganglia(cluster_name, opts, master_node, slave_nodes)
 
     # Configure and start Hadoop
-    configure_and_start_hadoop(cluster_name, opts, master_node, slave_nodes)
+#    configure_and_start_hadoop(cluster_name, opts, master_node, slave_nodes)
 
     # Configure and start Spark
     configure_and_start_spark(cluster_name, opts, master_node, slave_nodes)
@@ -1329,15 +1177,17 @@ def start_cluster(cluster_name, opts):
     print("\n\n---------------------------------------------------------------------------")
     print("                       Cluster %s is running" % (cluster_name))
     print("")
-    print(" Spark UI: http://" + master_node['external_ip'] + ":8080")
-    print(" Ganglia : http://" + master_node['external_ip'] + ":5080/ganglia")
+    print(" Spark UI: http://" + master_node.dns_name + ":8080")
+    print(" Ganglia : http://" + master_node.dns_name + ":5080/ganglia")
     print("\n\n---------------------------------------------------------------------------")
 
 
 # -------------------------------------------------------------------------------------
 #                      INSTALLATION AND CONFIGURATION HELPERS
 # -------------------------------------------------------------------------------------
+
     
+
 def deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes):
     print('[ Generating SSH keys on master and deploying to slave nodes ]')
 
@@ -1347,144 +1197,180 @@ def deploy_ssh_keys(cluster_name, opts, master_node, slave_nodes):
     cmds = [ "rm -f ~/.ssh/id_rsa && rm -f ~/.ssh/known_hosts",
              "ssh-keygen -q -t rsa -N \"\" -f ~/.ssh/id_rsa",
              "cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys",
-             "ssh-keyscan -H " + master_node['host_name'] + " >> ~/.ssh/known_hosts" ]
+             "ssh-keyscan -H " + master_node.dns_name + " >> ~/.ssh/known_hosts" ]
     for slave in slave_nodes:
-        cmds.append( "ssh-keyscan -H " + slave['host_name'] + " >> ~/.ssh/known_hosts"  )
+        cmds.append( "ssh-keyscan -H " + slave.dns_name + " >> ~/.ssh/known_hosts"  )
     cmds.append("tar czf .ssh.tgz .ssh");
-    run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
-
+    run_ssh(master_node, cmds, opts)
+    
     # Copy the ssh keys locally, and Clean up the archive on the master node.
-    run(COMMAND_PREFIX + " copy-files " + cluster_name + "-master:.ssh.tgz /tmp/spark_gce_ssh.tgz --zone " + master_node['zone'])
-    run(ssh_wrap(master_node, opts.identity_file, "rm -f .ssh.tgz"))
+    run_local(scp_wrap("{u}@{m}:.ssh.tgz".format(u = opts.user, m = master_node.dns_name),
+                       "/tmp/vapor_ssh_keys.tgz",
+                       opts))
+    run_ssh(master_node, "rm -f .ssh.tgz", opts)
 
     # Upload to the slaves, and unpack the ssh keys on the slave nodes.
-    run([COMMAND_PREFIX + " copy-files /tmp/spark_gce_ssh.tgz " + slave['host_name'] + ": --zone " + slave['zone'] for slave in slave_nodes], parallelize = True)
-    run( [ssh_wrap(slave,
-                   opts.identity_file,
-                   "rm -rf ~/.ssh && tar xzf spark_gce_ssh.tgz && rm spark_gce_ssh.tgz")
-          for slave in slave_nodes], parallelize = True)
+    run_local( [scp_wrap("/tmp/vapor_ssh_keys.tgz",
+                   "{u}@{s}:vapor_ssh_keys.tgz".format(u = opts.user, s = slave.dns_name),
+                   opts) for slave in slave_nodes],
+         parallelize = True )
+    async_execute( [functools.partial(run_ssh,
+                                      slave,
+                                      "rm -rf ~/.ssh && tar xzf vapor_ssh_keys.tgz && rm vapor_ssh_keys.tgz",
+                                      opts)
+                    for slave in slave_nodes] )
 
     # Clean up: delete the local copy of the ssh keys
-    run("rm -f /tmp/spark_gce_ssh.tgz")
+    run_local("rm -f /tmp/vapor_ssh_keys.tgz")
 
-
-def attach_local_ssd(cluster_name, opts, master_node, slave_nodes):
-    print('[ Attaching 350GB NVME SSD drive to each node under /mnt ]')
-
-    cmds = [ 'if [ ! -d /mnt ]; then sudo mkdir /mnt; fi',
-             'sudo /usr/share/google/safe_format_and_mount -m "mkfs.ext4 -F" /dev/disk/by-id/google-local-ssd-0 /mnt',
-             'sudo chmod a+w /mnt']
-
-    cmds = [ ssh_wrap(slave, opts.identity_file, cmds, group = True) for slave in [master_node] + slave_nodes ]
-    run(cmds, parallelize = True)
-
-def cleanup_scratch_disks(cluster_name, opts, detach_first = True, slaves_only = False):
-    # Get cluster ips
-    print('[ Detaching and deleting cluster scratch disks ]')
-    (master_node, slave_nodes) = get_cluster_info(cluster_name, opts)
-
-    # Detach drives
-    if detach_first:
-        cmds = []
-        if not slaves_only:
-            cmds = [ COMMAND_PREFIX + ' instances detach-disk ' + cluster_name + '-master --disk ' + cluster_name + '-m-scratch --zone ' + master_node['zone'] ]
-        else: 
-            cmds = [ ]
-            
-        for i, slave in enumerate(slave_nodes):
-            cmds.append( COMMAND_PREFIX + ' instances detach-disk ' + cluster_name + '-slave' + str(slave['slave_id']) + ' --disk ' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch --zone ' + slave['zone'] )
-        run(cmds, parallelize = True, terminate_on_failure = False)
-
-    # Delete drives
-    if not slaves_only:
-        cmds = [ COMMAND_PREFIX + ' disks delete "' + cluster_name + '-m-scratch" --quiet --zone ' + master_node['zone'] ]
-    else:
-        cmds = []
-        
-    for i, slave in enumerate(slave_nodes):
-        cmds.append( COMMAND_PREFIX + ' disks delete "' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch" --quiet --zone ' + slave['zone'] )
-    run(cmds, parallelize = True, terminate_on_failure = False)
 
 
 def attach_persistent_scratch_disks(cluster_name, opts, master_node, slave_nodes):
-    print('[ Adding new ' + opts.scratch_disk_size + ' drive of type "' + opts.scratch_disk_type + '" to each cluster node ]')
+    
+    print('[ Adding new ' + opts.scratch_disk_size + 'GB drive of type "' + opts.scratch_disk_type + '" to each cluster node ]')
 
-    cmds = []
-    cmds.append( [COMMAND_PREFIX + ' disks create "' + cluster_name + '-m-scratch" --size ' + opts.scratch_disk_size + ' --type "' + opts.scratch_disk_type + '" --zone ' + master_node['zone'],
-                  COMMAND_PREFIX + ' instances attach-disk ' + cluster_name + '-master --device-name "' + cluster_name + '-m-scratch" --disk ' + cluster_name + '-m-scratch --zone ' + master_node['zone'],
-                  ssh_wrap(master_node, opts.identity_file, "sudo mkfs.ext4 /dev/disk/by-id/google-"+ cluster_name + "-m-scratch " + " -F < /dev/null && " + 
-                           "sudo mount /dev/disk/by-id/google-"+ cluster_name + "-m-scratch /mnt && " + 
-                           'sudo chown "$USER":"$USER" /mnt') ] )
+    def attach_storage(node, opts):
+        conn = open_ec2_connection(opts)
+        vol = conn.create_volume(opts.scratch_disk_size, node.placement, volume_type = opts.scratch_disk_type)
+        conn.create_tags([vol.id], {"Name":cluster_name + "-scratch"})
 
-    for slave in slave_nodes:
-        cmds.append( [ COMMAND_PREFIX + ' disks create "' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch" --size ' + opts.scratch_disk_size + ' --type "' + opts.scratch_disk_type + '" --zone ' + slave['zone'],
-                       COMMAND_PREFIX + ' instances attach-disk ' + cluster_name + '-slave' +  str(slave['slave_id']) + ' --disk ' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch --device-name "' + cluster_name + '-s' + str(slave['slave_id']) + '-scratch" --zone ' + slave['zone'],
-                       ssh_wrap(slave, opts.identity_file, "sudo mkfs.ext4 /dev/disk/by-id/google-"+ cluster_name + "-s" + str(slave['slave_id']) + "-scratch " + " -F < /dev/null && " + 
-                                "sudo mount /dev/disk/by-id/google-"+ cluster_name + "-s" + str(slave['slave_id']) + "-scratch /mnt && " + 
-                                'sudo chown "$USER":"$USER" /mnt' ) ] )
+        # Wait for volume attachment
+        curr_vol = conn.get_all_volumes([vol.id])[0]
+        while curr_vol.status != 'available':
+            time.sleep(5)
+            curr_vol = conn.get_all_volumes([vol.id])[0]
 
-    run(cmds, parallelize = True)
+        conn.attach_volume (vol.id, node.id, "/dev/sdb")
+
+        # Wait for volume attachment
+        curr_vol = conn.get_all_volumes([vol.id])[0]
+        while curr_vol.status != 'in-use':
+            time.sleep(5)
+            curr_vol = conn.get_all_volumes([vol.id])[0]
+
+        # Wait a sec for it to show up!
+        time.sleep(5)
+
+        if VERBOSE >= 1:
+            print("  ({h}) allocating and attaching volume {v}".format(h = node.ip_address, v=vol))
+
+        # Format and mount the disk
+        cmds = ['sudo mkfs.ext4 /dev/sdb',
+                'sudo mount -o "defaults,noatime,nodiratime" /dev/sdb /mnt',
+                'sudo chmod o+rw /mnt']
+        run_ssh(node, cmds, opts)
+        
+    async_execute([functools.partial(attach_storage, node, opts) for node in [master_node] + slave_nodes])
+    
     print('[ All volumes mounted, will be available at /mnt ]')
+
+    
+def cleanup_scratch_disks(cluster_name, opts, master_node, slave_nodes, detach_first = True, slaves_only = False):
+    print('[ Cleaning up and de-allocating scratch drives.]')
+
+    def detach_storage(node, opts):
+    
+        conn = open_ec2_connection(opts)
+        filters = {'tag:Name': cluster_name + '-scratch'}
+
+        volumes = [v for v in conn.get_all_volumes(filters = filters) if v.attach_data.instance_id == node.id]
+
+        for vol in volumes:
+
+            if VERBOSE >= 1:
+                print("  ({h}) de-allocating volume {v}".format(h = node.ip_address, v=vol))
+            
+            conn.detach_volume(vol.id, node.id, "/dev/sdb", force = True)
+            
+            # Wait for volume dettachment
+            curr_vol = conn.get_all_volumes([vol.id])[0]
+            while curr_vol.status != 'available':
+                time.sleep(5)
+                curr_vol = conn.get_all_volumes([vol.id])[0]
+            
+            conn.delete_volume(vol.id)
+
+    async_execute([functools.partial(detach_storage, node, opts) for node in [master_node] + slave_nodes])
+
             
     
 def initialize_cluster(cluster_name, opts, master_node, slave_nodes):
     print('[ Installing software dependencies (this will take several minutes) ]')
 
     # Create a user-writable /opt directory on all nodes.
-    cmds = [ ssh_wrap(slave, opts.identity_file, "sudo mkdir -p /opt && sudo chown $USER.$USER /opt", group = True) for slave in [master_node] + slave_nodes ]
-    run(cmds, parallelize = True)
+    cmds = [ functools.partial(run_ssh,
+                               node,
+                               "sudo mkdir -p /opt && sudo -S chown ec2-user /opt",
+                               opts) for node in [master_node] + slave_nodes ]
+    async_execute(cmds)
     
     # Install the copy-dir script
-    run(COMMAND_PREFIX + " copy-files " + SPARK_EC2_PATH + "/support_files/copy-dir " + cluster_name + "-master: --zone " + master_node['zone'])
+    run_local(scp_wrap(VAPOR_PATH + "/support_files_ec2/copy-dir",
+                       "{u}@{m}:".format(u = opts.user, m = master_node.dns_name),
+                       opts))
     cmds = ['mkdir -p /opt/spark/bin && mkdir -p /opt/spark/conf',
             'mv $HOME/copy-dir /opt/spark/bin',
             'chmod 755 /opt/spark/bin/copy-dir']
-    run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
+    run_ssh(master_node, cmds, opts)
 
-    # Create a file containing the list of all current slave nodes 
+    # Create a file containing the list of all current slave nodes
     import tempfile
     slave_file = tempfile.NamedTemporaryFile(delete = False)
     for slave in slave_nodes:
-        slave_file.write(slave['host_name'] + '\n')
+        slave_file.write(bytes(slave.dns_name + '\n', 'UTF-8'))
     slave_file.close()
-    run(COMMAND_PREFIX + " copy-files " + slave_file.name + " " + cluster_name + "-master:slaves --zone " + master_node['zone'])
-    run(ssh_wrap(master_node, opts.identity_file, "mv slaves /opt/spark/conf", group = True))
-    run(ssh_wrap(master_node, opts.identity_file, "chmod 644 /opt/spark/conf/slaves", group = True))
+    run_local(scp_wrap(slave_file.name,
+                       "{u}@{m}:slaves".format(u = opts.user, m = master_node.dns_name),
+                       opts))
+    run_ssh(master_node, "mv slaves /opt/spark/conf", opts)
+    run_ssh(master_node, "chmod 644 /opt/spark/conf/slaves", opts)
     os.unlink(slave_file.name)
 
     # Download Anaconda, and copy to slave nodes
-    cmds = [ 'wget http://storage.googleapis.com/spark-gce/packages/Anaconda-2.1.0-Linux-x86_64.sh',
-             '/opt/spark/bin/copy-dir Anaconda-2.1.0-Linux-x86_64.sh']
-    run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
-        
-    cmds = [ 'sudo apt-get update -q -y',
+    cmds = [ 'wget http://storage.googleapis.com/spark-gce/packages/Anaconda3-2.3.0-Linux-x86_64.sh',
+             '/opt/spark/bin/copy-dir Anaconda3-2.3.0-Linux-x86_64.sh']
+    run_ssh(master_node, cmds, opts)
+
+    cmds = [ 'sudo yum update -y',
 
              # Install basic packages
-             'sudo apt-get install -q -y screen less git mosh pssh emacs bzip2 dstat iotop strace sysstat htop g++ openjdk-7-jdk',
-
-             # Rspark dependencies
-             'sudo apt-get install -q -y R-base realpath',  # Realpath is used by R to find java installations
+             'sudo yum install -y java-1.7.0-openjdk-devel screen less git mosh pssh emacs bzip2 dstat iotop strace sysstat htop',
 
              # PySpark dependencies
-             'rm -rf /opt/anaconda && bash Anaconda-2.1.0-Linux-x86_64.sh -b -p /opt/anaconda && rm Anaconda-2.1.0-Linux-x86_64.sh',
+             'rm -rf /opt/anaconda && bash Anaconda3-2.3.0-Linux-x86_64.sh -b -p /opt/anaconda && rm Anaconda3-2.3.0-Linux-x86_64.sh',
 
              # Set system path
-             'sudo sh -c \"echo export PATH=/opt/anaconda/bin:\$PATH:/opt/spark/bin:/opt/ephemeral-hdfs/bin >> /etc/bash.bashrc\"'
-         ]
-    cmds = [ ssh_wrap(node, opts.identity_file, cmds, group = True) for node in [master_node] + slave_nodes ]
-    run(cmds, parallelize = True)
+             'sh -c "echo \"export PATH=/opt/anaconda/bin:\$PATH:/opt/spark/bin:/opt/ephemeral-hdfs/bin\" >> /home/ec2-user/.bashrc"'
+
+             # Allow sudo without a tty (needed for spark startup scripts)
+             'sudo sed -i "s/requiretty/\!requiretty/g" /etc/sudoers'
+    ]
+    cmds = [ functools.partial(run_ssh,
+                               node,
+                               cmds, opts) for node in [master_node] + slave_nodes ]
+    async_execute(cmds)
 
 def install_spark(cluster_name, opts, master_node, slave_nodes):
     print('[ Installing Spark ]')
 
     # Install Spark and Scala
-    cmds = [ 'wget http://mirror.cc.columbia.edu/pub/software/apache/spark/spark-1.3.0/spark-1.3.0-bin-cdh4.tgz',
-             'tar xvf spark-1.3.0-bin-cdh4.tgz && rm spark-1.3.0-bin-cdh4.tgz',
-             'rm -rf /opt/spark && mv $HOME/spark-1.3.0-bin-cdh4 /opt/spark',
+    cmds = [ 'wget http://mirror.cc.columbia.edu/pub/software/apache/spark/spark-1.5.0/spark-1.5.0-bin-cdh4.tgz',
+             'tar xvf spark-1.5.0-bin-cdh4.tgz && rm spark-1.5.0-bin-cdh4.tgz',
+             'rm -rf /opt/spark && mv $HOME/spark-1.5.0-bin-cdh4 /opt/spark',
              'wget http://downloads.typesafe.com/scala/2.11.6/scala-2.11.6.tgz',
              'tar xvzf scala-2.11.6.tgz && rm -rf scala-2.11.6.tgz',
              'rm -rf /opt/scala && mv $HOME/scala-2.11.6 /opt/scala']
-    run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
+    run_ssh(master_node, cmds, opts)
+    
+    # Install the copy-dir script
+    run_local(scp_wrap(VAPOR_PATH + "/support_files_ec2/copy-dir",
+                       "{u}@{m}:/opt/spark/bin".format(u = opts.user, m = master_node.dns_name),
+                       opts))
+    sys.exit(1)
+
+    
+def configure_and_start_spark(cluster_name, opts, master_node, slave_nodes):
+    print('[ Configuring Spark ]')
 
     # Set up the spark-env.conf and spark-defaults.conf files
     deploy_template(opts, master_node, "spark/conf/spark-env.sh")
@@ -1492,80 +1378,82 @@ def install_spark(cluster_name, opts, master_node, slave_nodes):
     deploy_template(opts, master_node, "spark/conf/spark-defaults.conf")
     deploy_template(opts, master_node, "spark/setup-auth.sh")
     cmds = ['echo export SPARK_HOME=/opt/spark >> $HOME/.bashrc',
-            'echo export JAVA_HOME=/usr/lib/jvm/java-1.7.0-openjdk-amd64 >> $HOME/.bashrc',
+            'echo export JAVA_HOME=/usr/lib/jvm/java-1.7.0-openjdk.x86_64 >> $HOME/.bashrc',
             '/opt/spark/setup-auth.sh',
 
             # spark-env.conf
-            'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" /opt/spark/conf/spark-env.sh',
+            'sed -i "s/{{active_master}}/' + master_node.private_dns_name + '/g" /opt/spark/conf/spark-env.sh',
             'sed -i "s/{{worker_cores}}/' + str(instance_info[opts.slave_instance_type]["num_cpus"]) + '/g" /opt/spark/conf/spark-env.sh',
             'sed -i "s/{{spark_master_memory}}/' + instance_info[opts.master_instance_type]["spark_master_memory"] + '/g" /opt/spark/conf/spark-env.sh',
             'sed -i "s/{{spark_slave_memory}}/' + instance_info[opts.slave_instance_type]["spark_slave_memory"] + '/g" /opt/spark/conf/spark-env.sh',
 
             # core-site.xml
-            'sed -i "s/{{active_master}}/' + cluster_name + '-master/g" /opt/spark/conf/core-site.xml',
+            'sed -i "s/{{active_master}}/' + master_node.private_dns_name + '/g" /opt/spark/conf/core-site.xml',
 
             # spark-defaults.conf
             'sed -i "s/{{spark_master_memory}}/' + instance_info[opts.master_instance_type]["spark_master_memory"] + '/g" /opt/spark/conf/spark-defaults.conf',
             'sed -i "s/{{spark_slave_memory}}/' + instance_info[opts.slave_instance_type]["spark_slave_memory"] + '/g" /opt/spark/conf/spark-defaults.conf',
 
     ]
-    run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
+    run_ssh(master_node, cmds, opts)
 
+    cmds = ['echo export SPARK_HOME=/opt/spark >> $HOME/.bashrc',
+            'echo export JAVA_HOME=/usr/lib/jvm/java-1.7.0-openjdk.x86_64 >> $HOME/.bashrc']
+    async_execute([functools.partial(run_ssh,node, cmds, opts) for node in slave_nodes])
+
+    
     # (Re-)populate the file containing the list of all current slave nodes 
     import tempfile
     slave_file = tempfile.NamedTemporaryFile(delete = False)
     for slave in slave_nodes:
-        slave_file.write(slave['host_name'] + '\n')
-    slave_file.close()
-    cmds = [ COMMAND_PREFIX + " copy-files " + slave_file.name + " " + cluster_name + "-master:/opt/spark/conf/slaves --zone " + master_node['zone']]
-    run(cmds)
-    os.unlink(slave_file.name)
+        slave_file.write(bytes(slave.private_dns_name + '\n', 'UTF-8'))
+        slave_file.close()
+        run_local(scp_wrap(slave_file.name,
+                           "{u}@{m}:/opt/spark/conf/slaves".format(u = opts.user, m = master_node.dns_name),
+                           opts))
+        os.unlink(slave_file.name)
     
-    # Install the copy-dir script
-    run(COMMAND_PREFIX + " copy-files " + SPARK_EC2_PATH + "/support_files/copy-dir " + cluster_name + "-master:/opt/spark/bin --zone " + master_node['zone'])
-    
-    # Copy spark to the slaves and create a symlink to $HOME/spark
-    run(ssh_wrap(master_node, opts.identity_file, '/opt/spark/bin/copy-dir /opt/spark'))
-
-    
-def configure_and_start_spark(cluster_name, opts, master_node, slave_nodes):
-    print('[ Configuring Spark ]')
-
     # Create the Spark scratch directory on the local SSD
-    run([ ssh_wrap(node, opts.identity_file, 'if [ ! -d /mnt/spark ]; then mkdir /mnt/spark; fi') for node in [master_node] + slave_nodes ], parallelize = True)
-
-    # Patches to address system performance issues. These mimic settings used in
-    # the spark-ec2 scripts.
-
+    #
     # Disable Transparent Huge Pages (THP)
     # THP can result in system thrashing (high sys usage) due to frequent defrags of memory.
     # Most systems recommends turning THP off.
-    run([ ssh_wrap(node, opts.identity_file, 'if [[ -e /sys/kernel/mm/transparent_hugepage/enabled ]]; then sudo sh -c "echo never > /sys/kernel/mm/transparent_hugepage/enabled"; fi') for node in [master_node] + slave_nodes ], parallelize = True)
-
+    #
     # Allow memory to be over committed. Helps in pyspark where we fork
-    run([ ssh_wrap(node, opts.identity_file, 'sudo sh -c "echo 1 > /proc/sys/vm/overcommit_memory"') for node in [master_node] + slave_nodes ], parallelize = True)
+    #
+    cmds = ['sudo chmod o+rw /mnt',
+            'if [ ! -d /mnt/spark ]; then mkdir /mnt/spark; fi',
+            'if [[ -e /sys/kernel/mm/transparent_hugepage/enabled ]]; then sudo sh -c "echo never > /sys/kernel/mm/transparent_hugepage/enabled"; fi',
+            'sudo sh -c "echo 1 > /proc/sys/vm/overcommit_memory"']
+    async_execute([functools.partial(run_ssh, node, cmds, opts) for node in [master_node] + slave_nodes])
 
+    # Copy spark to the slaves
+    run_ssh(master_node, '/opt/spark/bin/copy-dir /opt/spark', opts)
+    
     # Start Spark
     print('[ Starting Spark ]')
-    run(ssh_wrap(master_node, opts.identity_file, '/opt/spark/sbin/start-all.sh') )
+    run_ssh(master_node, '/opt/spark/sbin/start-all.sh', opts)
 
     
 def configure_ganglia(cluster_name, opts, master_node, slave_nodes):
     print('[ Configuring Ganglia ]')
     
-    run(ssh_wrap(master_node, opts.identity_file, "mkdir -p /opt/ganglia", group = True))
+    run_ssh(master_node, "mkdir -p /opt/ganglia", opts)
 
     deploy_template(opts, master_node, "ganglia/ports.conf")
     deploy_template(opts, master_node, "ganglia/ganglia.conf")
     deploy_template(opts, master_node, "ganglia/gmetad.conf")
     deploy_template(opts, master_node, "ganglia/gmond.conf")
     deploy_template(opts, master_node, "ganglia/000-default.conf")
+
+    sys.exit(0)
     
     # Install gmetad and the ganglia web front-end on the master node
-    cmds = [ 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -q -y ganglia-webfrontend gmetad ganglia-monitor',
-             'sudo cp /opt/ganglia/ports.conf /etc/apache2/',
-             'sudo cp /opt/ganglia/000-default.conf /etc/apache2/sites-enabled/',
-             'sudo cp /opt/ganglia/ganglia.conf /etc/apache2/sites-enabled/'
+    cmds = [ 'sudo yum install -y ganglia-web ganglia-gmetad ganglia-gmond'
+#             'sudo cp /opt/ganglia/ports.conf /etc/apache2/',
+#             'sudo cp /opt/ganglia/000-default.conf /etc/apache2/sites-enabled/',
+             'sudo cp /opt/ganglia/ganglia.conf /etc/httpd/conf.d/'
+             'sudo cp /opt/ganglia/httpd.conf /etc/httpd/conf/'
     ]
     run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
     
@@ -1579,11 +1467,15 @@ def configure_ganglia(cluster_name, opts, master_node, slave_nodes):
     run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
 
     # Configure gmond and gmetad on the master node
-    cmds = ['sed -i -e  "s/{{master-node}}/' + cluster_name + '-master/g" /opt/ganglia/gmetad.conf',
+    cmds = ['sed -i -e  "s/{{master-node}}/' + master_node.dns_name + '/g" /opt/ganglia/gmetad.conf',
             'sudo cp /opt/ganglia/gmetad.conf /etc/ganglia/',
-            'sed -i -e  "s/{{master-node}}/' + cluster_name + '-master/g" /opt/ganglia/gmond.conf', 
+            'sed -i -e  "s/{{master-node}}/' + master_node.dns_name + '/g" /opt/ganglia/gmond.conf', 
             'sudo cp /opt/ganglia/gmond.conf /etc/ganglia/',
-            'sudo service gmetad restart && sudo service ganglia-monitor restart && sudo service apache2 restart'
+            'sudo /etc/init.d/gmond restart',
+            'chown -R nobody /var/lib/ganglia/rrds',
+            'ln -s /usr/share/ganglia/conf/default.json /var/lib/ganglia/conf/',
+            '/etc/init.d/gmetad restart'
+            '/etc/init.d/httpd restart'
     ]
     run(ssh_wrap(master_node, opts.identity_file, cmds, group = True))
 
@@ -1712,8 +1604,8 @@ def parse_args():
         "-k", "--key-pair",
         help="Key pair to use on instances")
     parser.add_option(
-        "-i", "--identity-file", default = os.path.join(homedir, ".ssh", "google_compute_engine"),
-        help="SSH private key file to use for logging into instances")
+        "-i", "--identity-file", 
+        help="AWS identity file use for logging into instances (*.pem)")
     parser.add_option(
         "-t", "--slave-instance-type", default="g2.8xlarge",
         help="Type of instance to launch (default: g2.8xlarge).")
@@ -1733,14 +1625,14 @@ def parse_args():
         "--boot-disk-type", default="pd-standard",
         help="Boot disk type.  Run \'gcloud compute disk-types list\' to see your options.")
     parser.add_option(
-        "--scratch-disk-type", default="pd-standard",
-        help="Boot disk type.  Run \'gcloud compute disk-types list\' to see your options.")
+        "--scratch-disk-type", default="standard",
+        help="Scratch disk type.  (e.g. 'gp2' or 'standard')")
     parser.add_option(
-        "--boot-disk-size", default="50GB",
+        "--boot-disk-size", default="50",
         help="The size of the boot disk.  Run \'gcloud compute disk-types list\' to see your options.")
     parser.add_option(
-        "--scratch-disk-size", default="256GB",
-        help="The size of the boot disk.  Run \'gcloud compute disk-types list\' to see your options.")
+        "--scratch-disk-size", default="256",
+        help="The size of the boot disk (in GB).  Run \'gcloud compute disk-types list\' to see your options.")
 
     parser.add_option(
         "-r", "--region", default="us-east-1",
@@ -1750,10 +1642,10 @@ def parse_args():
         help="AWS zone to target when launching instances (default: picks one at random)")
 
     parser.add_option(
-        "--ebs-vol-size", metavar="SIZE", type="int", default=0,
+        "--ebs-vol-size", metavar="SIZE", type="int", default=200,
         help="Size (in GB) of each EBS volume.")
     parser.add_option(
-        "--ebs-vol-type", default="standard",
+        "--ebs-vol-type", default="gp2",
         help="EBS volume type (e.g. 'gp2', 'standard').")
     parser.add_option(
         "--ebs-vol-num", type="int", default=1,
@@ -1777,7 +1669,7 @@ def parse_args():
         "--delete-groups", action="store_true", default=False,
         help="When destroying a cluster, delete the security groups that were created")
     parser.add_option(
-        "-u", "--user", default="root",
+        "-u", "--user", default="ec2-user",
         help="The SSH user you want to connect as (default: %default)")
 
     parser.add_option(
@@ -1796,9 +1688,6 @@ def parse_args():
     parser.add_option(
         "--authorized-address", type="string", default="0.0.0.0/0",
         help="Address to authorize on created security groups (default: %default)")
-    parser.add_option(
-        "--additional-security-group", type="string", default="",
-        help="Additional security group to place the machines in")
     parser.add_option(
         "--additional-tags", type="string", default="",
         help="Additional tags to set on the machines; tags are comma-separated, while name and " +
@@ -1859,6 +1748,10 @@ def mosh_cluster(cluster_name, opts):
 def ssh_cluster(cluster_name, opts):
     import subprocess
 
+    if opts.identity_file is None:
+        print("ERROR: Must provide an identity file (-i) for ssh connections.", file=stderr)
+        sys.exit(1)
+    
     conn = open_ec2_connection(opts)
     (master_nodes, slave_nodes) = get_existing_cluster(conn, opts, cluster_name, die_on_error=False)
 
@@ -1882,8 +1775,12 @@ def ssh_cluster(cluster_name, opts):
         print ("\nSSH port forwarding requested.  Remote port " + ssh_ports[1] +
                " will be accessible at http://localhost:" + ssh_ports[0] + '\n')
         try:
-            cmd = 'ssh ' + master_nodes[0].dns_name + ' --ssh-flag="-L 8890:127.0.0.1:8888"'
-            subprocess.check_call(shlex.split(cmd))
+            ret = subprocess.call([
+                'ssh',
+                '-o', 'StrictHostKeyChecking=no',
+                '-i', opts.identity_file,
+                '-L', '{local}:127.0.0.1:{remote}'.format(local=ssh_ports[0], remote=ssh_ports[1]),
+                '{u}@{h}'.format(u=opts.user, h=master_nodes[0].dns_name)])
         except subprocess.CalledProcessError:
             print("\nERROR: Could not establish ssh connection with port forwarding.")
             print("       Check your Internet connection and make sure that the")
@@ -1898,7 +1795,7 @@ def ssh_cluster(cluster_name, opts):
             'ssh',
             '-o', 'StrictHostKeyChecking=no',
             '-i', opts.identity_file,
-            'ec2-user@{h}'.format(h=master_nodes[0].dns_name)])
+            '{u}@{h}'.format(u=opts.user, h=master_nodes[0].dns_name)])
         
 
 def sshfs_cluster(cluster_name, opts, optional_arg):

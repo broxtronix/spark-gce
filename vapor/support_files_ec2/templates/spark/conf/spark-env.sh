@@ -53,7 +53,6 @@ export SPARK_LOCAL_DIRS=/mnt/spark
 export SPARK_SUBMIT_LIBRARY_PATH="$SPARK_SUBMIT_LIBRARY_PATH:/opt/ephemeral-hdfs/lib/native/"
 export SPARK_SUBMIT_CLASSPATH="$SPARK_CLASSPATH:$SPARK_SUBMIT_CLASSPATH:/opt/ephemeral-hdfs/conf"
 
-export SPARK_WORKER_INSTANCES=1
 export SPARK_WORKER_CORES={{worker_cores}}
 export SPARK_DRIVER_MEMORY={{spark_master_memory}}
 export SPARK_WORKER_MEMORY={{spark_slave_memory}}
