@@ -1065,7 +1065,7 @@ def ssh_cluster(cluster_name, opts):
         print ("\nSSH port forwarding requested.  Remote port " + ssh_ports[1] +
                " will be accessible at http://localhost:" + ssh_ports[0] + '\n')
         try:
-            cmd = COMMAND_PREFIX + ' ssh ' + master_node['host_name'] + ' --ssh-flag="-L 8890:127.0.0.1:8888"'
+            cmd = COMMAND_PREFIX + ' ssh ' + master_node['host_name'] + ' --ssh-flag="-L ' + str(ssh_ports[0]) + ':127.0.0.1:' + str(ssh_ports[1]) + '"'
             subprocess.check_call(shlex.split(cmd))
         except subprocess.CalledProcessError:
             print("\nERROR: Could not establish ssh connection with port forwarding.")
